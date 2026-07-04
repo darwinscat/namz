@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: MIT
+cmake_minimum_required(VERSION 3.14)
+project(namz VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(NAMZ_BUILD_CLI   "Build the namz command-line tool" ON)
+option(NAMZ_BUILD_TESTS "Build the namz round-trip tests"  ON)
+
+# --- nlohmann/json (header-only, MIT) — the codec's only dependency -----------------------------------
+include(FetchContent)
+FetchContent_Declare(nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+  GIT_SHALLOW TRUE)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+
+# --- namz: header-only interface library -------------------------------------------------------------
+add_library(namz INTERFACE)
+add_library(namz::namz ALIAS namz)
+target_include_directories(namz INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_features(namz INTERFACE cxx_std_17)
+target_link_libraries(namz INTERFACE nlohmann_json::nlohmann_json)
+
+# --- CLI ---------------------------------------------------------------------------------------------
+if(NAMZ_BUILD_CLI)
+  add_executable(namz_cli cli/namz.cpp)
+  set_target_properties(namz_cli PROPERTIES OUTPUT_NAME namz)
+  target_link_libraries(namz_cli PRIVATE namz::namz)
+endif()
+
+# --- tests -------------------------------------------------------------------------------------------
+if(NAMZ_BUILD_TESTS)
+  enable_testing()
+  add_executable(namz_test tests/roundtrip.cpp)
+  target_link_libraries(namz_test PRIVATE namz::namz)
+  add_test(NAME namz_roundtrip COMMAND namz_test)
+
+  add_executable(namz_test_adversarial tests/adversarial.cpp)
+  target_link_libraries(namz_test_adversarial PRIVATE namz::namz)
+  add_test(NAME namz_adversarial COMMAND namz_test_adversarial)
+endif()
+
+# --- install (so downstreams can find_package or just copy the header) --------------------------------
+include(GNUInstallDirs)
+install(FILES include/namz.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(NAMZ_BUILD_CLI)
+  install(TARGETS namz_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()

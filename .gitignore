@@ -1,0 +1,16 @@
+# build output
+/build/
+/build-*/
+cmake-build-*/
+/out/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.user
+
+# stray artefacts
+*.o
+*.obj
+*.exe
