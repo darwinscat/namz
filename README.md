@@ -109,7 +109,7 @@ bit-exact float32 everywhere.
 |---|---|---|---|
 | C++ (reference) | `namz.h` | header / CMake | [`include/`](include/) |
 | Python | `namz` | [PyPI](https://pypi.org/project/namz/) | [`python/`](python/) |
-| JavaScript / TypeScript | `namz` | [npm](https://www.npmjs.com/package/namz) | [`js/`](js/) |
+| JavaScript / TypeScript | `@darwins-cat/namz` | [npm](https://www.npmjs.com/package/@darwins-cat/namz) | [`js/`](js/) |
 
 Each port ships an idiomatic API (`pack` / `unpack` / `readMeta` / `isNamz`) and the same
 `encode` / `decode` / `map` / `verify` CLI, uses the language's **native** JSON library, and **versions

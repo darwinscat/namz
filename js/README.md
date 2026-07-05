@@ -17,7 +17,7 @@ plus a live differential fuzz against the reference binary.
 ## Install
 
 ```bash
-npm install namz
+npm install @darwins-cat/namz
 ```
 
 Node ≥ 18. Works in browsers/bundlers too (uses only `TextEncoder`/`DataView`/`Float32Array`).
@@ -25,7 +25,7 @@ Node ≥ 18. Works in browsers/bundlers too (uses only `TextEncoder`/`DataView`/
 ## Library
 
 ```js
-import { pack, unpack, readMeta, isNamz } from "namz";
+import { pack, unpack, readMeta, isNamz } from "@darwins-cat/namz";
 
 const nam = new TextEncoder().encode('{"architecture":"WaveNet","weights":[0.5,-0.5,0.25]}');
 
