@@ -75,10 +75,14 @@ def _type_value(s: str) -> Union[bool, int, str]:
     if s == "false":
         return False
     if s and all(c in "0123456789" for c in s):
-        # int64 max is 19 digits; anything longer can't fit → keep as string (matches std::stoll
-        # overflow). The length gate also avoids int()'s 4300-digit conversion limit on Python ≥ 3.11.
-        if len(s) <= 19:
-            v = int(s)
+        # Match std::stoll: it ignores leading zeros and types by VALUE, not string length. Strip the
+        # zeros first (so "000…001" → 1), then only genuinely-too-big values stay strings. The length
+        # gate on the stripped digits also avoids int()'s 4300-digit conversion limit on Python ≥ 3.11.
+        stripped = s.lstrip("0")
+        if stripped == "":
+            return 0  # all zeros → 0
+        if len(stripped) <= 19:
+            v = int(stripped)
             if v <= _INT64_MAX:
                 return v
         return s

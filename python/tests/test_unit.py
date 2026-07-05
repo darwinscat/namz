@@ -39,6 +39,22 @@ def test_empty_weights_array_is_preserved():
     assert namz.unpack(packed) == b'{"architecture":"X","weights":[]}'
 
 
+def test_leading_zero_metadata_typed_as_int_like_stoll():
+    # std::stoll ignores leading zeros and types by value, not string length.
+    blob = namz.pack(
+        b'{"architecture":"X","weights":[1.0]}',
+        namz.PackOptions(metadata={"count": "000000000000000000001", "zeros": "0000"}),
+    )
+    assert namz.read_meta(blob) == {"count": "1", "zeros": "0"}
+    assert b'"count":1' in namz.unpack(blob)  # integer in the skeleton, not a string
+    # genuinely-too-big stays a string
+    big = namz.pack(
+        b'{"architecture":"X","weights":[1.0]}',
+        namz.PackOptions(metadata={"n": "99999999999999999999"}),
+    )
+    assert namz.read_meta(big) == {"n": "99999999999999999999"}
+
+
 def test_read_meta_typed_fields():
     src = b'{"architecture":"WaveNet","weights":[0.5]}'
     opts = namz.PackOptions(
