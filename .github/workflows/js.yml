@@ -40,14 +40,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      # Note: no `--provenance`. Provenance signs an entry into Sigstore's Rekor transparency log, which is
+      # keyed by the (deterministic) tarball digest — a failed attempt leaves an entry that makes every
+      # retry 409 ("equivalent entry already exists"). Re-enable for a future version if desired.
       - name: Publish
-        run: npm publish --provenance --access public
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
