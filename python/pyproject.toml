@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MIT
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "namz"
+version = "1.0.0"
+description = "Lossless codec for NeuralAmpModeler .nam files — ~5.5x smaller, bit-exact float32, deterministic."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Oleh Tsymaienko", email = "oleh@darwinscat.com" },
+  { name = "Alisa Lafoks", email = "alisa@darwinscat.com" },
+]
+keywords = ["nam", "neural-amp-modeler", "codec", "float32", "guitar", "audio", "dsp"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
+]
+dependencies = ["numpy>=1.21"]
+
+[project.urls]
+Homepage = "https://github.com/darwinscat/namz"
+Repository = "https://github.com/darwinscat/namz"
+"Wire format" = "https://github.com/darwinscat/namz/blob/main/NAMZ-FORMAT.md"
+
+[project.scripts]
+namz = "namz.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/namz"]
+
+[tool.hatch.build.targets.sdist]
+# Ship the shared conformance vectors inside the sdist so `pytest` works from an unpacked release too.
+include = ["src/namz", "tests", "README.md", "LICENSE", "conformance"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../conformance" = "conformance"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
