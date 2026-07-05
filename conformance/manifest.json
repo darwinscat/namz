@@ -1,0 +1,121 @@
+{
+  "format": "namz",
+  "note": "Cross-language conformance vectors. Encode a valid input with the given options and it must BYTE-MATCH the .namz; decode the .namz and the weights must be bit-exact float32. Every invalid .namz must be rejected (empty/error, never crash).",
+  "valid": [
+    {
+      "name": "flat",
+      "input": "vectors/flat.nam",
+      "output": "vectors/flat.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "flat-noshuffle",
+      "input": "vectors/flat-noshuffle.nam",
+      "output": "vectors/flat-noshuffle.namz",
+      "shuffle": false,
+      "set": {}
+    },
+    {
+      "name": "nested",
+      "input": "vectors/nested.nam",
+      "output": "vectors/nested.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "metadata",
+      "input": "vectors/metadata.nam",
+      "output": "vectors/metadata.namz",
+      "shuffle": true,
+      "set": {
+        "tone_type": "hi-gain",
+        "boost": "true",
+        "device": "tube:1,pnp:1",
+        "gear_make": "Two Notes"
+      }
+    },
+    {
+      "name": "no-weights",
+      "input": "vectors/no-weights.nam",
+      "output": "vectors/no-weights.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "empty-weights",
+      "input": "vectors/empty-weights.nam",
+      "output": "vectors/empty-weights.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "edge-floats",
+      "input": "vectors/edge-floats.nam",
+      "output": "vectors/edge-floats.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "integer-weights",
+      "input": "vectors/integer-weights.nam",
+      "output": "vectors/integer-weights.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "degenerate-array",
+      "input": "vectors/degenerate-array.nam",
+      "output": "vectors/degenerate-array.namz",
+      "shuffle": true,
+      "set": {}
+    }
+  ],
+  "invalid": [
+    {
+      "name": "bad-magic",
+      "file": "invalid/bad-magic.namz",
+      "why": "magic corrupted"
+    },
+    {
+      "name": "bad-version",
+      "file": "invalid/bad-version.namz",
+      "why": "formatVersion 9 (> 2) must be refused"
+    },
+    {
+      "name": "bad-codec",
+      "file": "invalid/bad-codec.namz",
+      "why": "codec 1 (deflate, reserved) must be refused"
+    },
+    {
+      "name": "bad-dtype",
+      "file": "invalid/bad-dtype.namz",
+      "why": "dtype 1 (float16, reserved) must be refused"
+    },
+    {
+      "name": "truncated",
+      "file": "invalid/truncated.namz",
+      "why": "body truncated \u2014 exact-length check must reject"
+    },
+    {
+      "name": "trailing-junk",
+      "file": "invalid/trailing-junk.namz",
+      "why": "extra bytes \u2014 exact-length check must reject"
+    },
+    {
+      "name": "lying-metalen",
+      "file": "invalid/lying-metalen.namz",
+      "why": "metaLen far bigger than the buffer"
+    },
+    {
+      "name": "empty",
+      "file": "invalid/empty.namz",
+      "why": "empty buffer"
+    },
+    {
+      "name": "magic-only",
+      "file": "invalid/magic-only.namz",
+      "why": "header too short"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 cmake_minimum_required(VERSION 3.14)
-project(namz VERSION 0.1.0 LANGUAGES CXX)
+project(namz VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,6 +44,13 @@ if(NAMZ_BUILD_TESTS)
   add_executable(namz_test_adversarial tests/adversarial.cpp)
   target_link_libraries(namz_test_adversarial PRIVATE namz::namz)
   add_test(NAME namz_adversarial COMMAND namz_test_adversarial)
+
+  # The reference consumer of the cross-language conformance vectors (conformance/).
+  add_executable(namz_test_conformance tests/conformance.cpp)
+  target_link_libraries(namz_test_conformance PRIVATE namz::namz)
+  target_compile_definitions(namz_test_conformance PRIVATE
+    NAMZ_CONFORMANCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/conformance")
+  add_test(NAME namz_conformance COMMAND namz_test_conformance)
 endif()
 
 # --- install (so downstreams can find_package or just copy the header) --------------------------------
