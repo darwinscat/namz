@@ -97,6 +97,26 @@ The wire format is small and documented in **[NAMZ-FORMAT.md](NAMZ-FORMAT.md)**.
 reserved codec/dtype bytes, so it can grow (e.g. a future `zstd` codec or `float16` dtype) without breaking
 old readers.
 
+## Language ports
+
+The format is a **cross-language contract**, not just one binary. Native ports live in this repo and are
+**byte-for-byte identical** to this C++ reference — each is validated against the shared
+[conformance vectors](conformance/) (the cross-language TCK: golden encode pairs + must-reject blobs) plus
+a differential fuzz against the reference, so `encode` reproduces the exact same `.namz` and `decode` is
+bit-exact float32 everywhere.
+
+| language | package | registry | source |
+|---|---|---|---|
+| C++ (reference) | `namz.h` | header / CMake | [`include/`](include/) |
+| Python | `namz` | [PyPI](https://pypi.org/project/namz/) | [`python/`](python/) |
+| JavaScript / TypeScript | `namz` | [npm](https://www.npmjs.com/package/namz) | [`js/`](js/) |
+| Swift | `Namz` | SwiftPM | [`swift/`](swift/) |
+
+Each port ships an idiomatic API (`pack` / `unpack` / `readMeta` / `isNamz`) and the same
+`encode` / `decode` / `map` / `verify` CLI, uses the language's **native** JSON library, and **versions
+independently** (its own semver and tags) while tracking the same wire **format version 2**. See
+[docs/LANGUAGE-PORTS-BRIEF.md](docs/LANGUAGE-PORTS-BRIEF.md) for the porting model.
+
 ## License
 
 [MIT](LICENSE). namz is by [Darwin's Cat](https://darwinscat.com) — it grew out of the
