@@ -28,7 +28,9 @@ jobs:
 
   linux:
     name: test (Linux / Swift ${{ matrix.swift }})
-    runs-on: ubuntu-latest
+    # ubuntu-22.04: the swift.org toolchains for both 5.9 and 6.0 publish Ubuntu 22.04 binaries (the
+    # 24.04 that ubuntu-latest now points to has no 5.9 build, which 404s in setup-swift).
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
