@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: MIT
+# Swift port CI: build the package and run the conformance/property/adversarial runner on macOS + Linux.
+# SwiftPM publishes by git tag (`swift-vX.Y.Z`) — consumers reference the repo URL + tag; no registry upload.
+name: swift
+
+on:
+  push:
+    branches: [main]
+    paths: ["swift/**", "conformance/**", ".github/workflows/swift.yml"]
+    tags: ["swift-v*"]
+  pull_request:
+    paths: ["swift/**", "conformance/**", ".github/workflows/swift.yml"]
+
+defaults:
+  run:
+    working-directory: swift
+
+jobs:
+  macos:
+    name: test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - name: Conformance vectors + property fuzz + adversarial suite
+        run: swift run -c release namz-conformance
+
+  linux:
+    name: test (Linux / Swift ${{ matrix.swift }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        swift: ["5.9", "6.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: ${{ matrix.swift }}
+      - run: swift --version
+      - run: swift build
+      - name: Conformance vectors + property fuzz + adversarial suite
+        run: swift run -c release namz-conformance
