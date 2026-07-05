@@ -1,0 +1,44 @@
+{
+  "name": "namz",
+  "version": "1.0.0",
+  "description": "Lossless codec for NeuralAmpModeler .nam files — ~5.5x smaller, bit-exact float32, deterministic. Byte-identical to the C++ reference.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "namz": "./bin/namz.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "nam",
+    "neural-amp-modeler",
+    "codec",
+    "float32",
+    "guitar",
+    "audio",
+    "dsp"
+  ],
+  "author": "Oleh Tsymaienko <oleh@darwinscat.com> & Alisa Lafoks <alisa@darwinscat.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/darwinscat/namz.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/darwinscat/namz#readme",
+  "bugs": {
+    "url": "https://github.com/darwinscat/namz/issues"
+  }
+}
