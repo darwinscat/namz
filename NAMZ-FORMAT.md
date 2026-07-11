@@ -84,12 +84,15 @@ instead of parsing filenames. All keys are flat strings (the header's contract):
 |---|---|---|
 | `settings.<control>` | `settings.gain` = `12h` | THIS file's position of one control |
 | `controls` | `channel:channel=green\|orange\|red; boost:boost=off\|on; gain:gain=07h\|08h\|…\|17h` | the whole device's control spec |
+| `rig_id` | `dc-revolt-guitar` | stable device identity — grouping survives display renames |
+| `slot` | `preamp` | where the device sits in a player's chain: `pedal` · `preamp` · `amp` · `poweramp` · `rig` |
 
 **`controls` spec** — `;`-separated entries of `<name>:<role>=<value>\|<value>\|…` in capture order.
 Roles mirror the filename-token grammar: `channel` (colour word or `chN`), `gain` (`NNh` clock
 positions), `boost` (presence token; `settings.<boost control>` is `on`/`off` and the conventional
-`boost` bool is stamped alongside), `generic` (a free token). A family of files sharing `gear_model`
-+ `controls` IS one device; each file's `settings.*` places it in that device's matrix.
+`boost` bool is stamped alongside), `topology` (`PP`/`SE`), `generic` (a free token). A family of
+files sharing `rig_id` (else `gear_model`) + `controls` IS one device; each file's `settings.*`
+places it in that device's matrix.
 
 ## Versioning
 
