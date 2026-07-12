@@ -27,6 +27,14 @@ target_include_directories(namz INTERFACE
 target_compile_features(namz INTERFACE cxx_std_17)
 target_link_libraries(namz INTERFACE nlohmann_json::nlohmann_json)
 
+# --- namz_rig: the .namz device model (controls from metadata, selection policy) — std-only ------------
+add_library(namz_rig INTERFACE)
+add_library(namz::rig ALIAS namz_rig)
+target_include_directories(namz_rig INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_features(namz_rig INTERFACE cxx_std_17)
+
 # --- CLI ---------------------------------------------------------------------------------------------
 if(NAMZ_BUILD_CLI)
   add_executable(namz_cli cli/namz.cpp)
@@ -45,6 +53,10 @@ if(NAMZ_BUILD_TESTS)
   target_link_libraries(namz_test_adversarial PRIVATE namz::namz)
   add_test(NAME namz_adversarial COMMAND namz_test_adversarial)
 
+  add_executable(namz_test_rig tests/rig.cpp)
+  target_link_libraries(namz_test_rig PRIVATE namz::rig namz::namz)   # namz::namz brings nlohmann for the rig.json loader
+  add_test(NAME namz_rig COMMAND namz_test_rig)
+
   # The reference consumer of the cross-language conformance vectors (conformance/).
   add_executable(namz_test_conformance tests/conformance.cpp)
   target_link_libraries(namz_test_conformance PRIVATE namz::namz)
@@ -55,7 +67,7 @@ endif()
 
 # --- install (so downstreams can find_package or just copy the header) --------------------------------
 include(GNUInstallDirs)
-install(FILES include/namz.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES include/namz.h include/namz_rig.h include/namz_rig_load.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(NAMZ_BUILD_CLI)
   install(TARGETS namz_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
