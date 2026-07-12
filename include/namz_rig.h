@@ -368,17 +368,19 @@ inline const FileEntry* resolve (const Device& d, Settings& settings,
                                  const std::string& changed, const std::string& value)
 {
     if (d.files.empty()) return nullptr;
+    const bool hadChanged = settings.count (changed) != 0;
+    const std::string prevChanged = hadChanged ? settings.at (changed) : std::string();
     settings[changed] = value;
     if (const auto* exact = d.find (settings)) return exact;
 
     const auto defaults = defaultSettings (d);
     const FileEntry* best = nullptr;
-    long bestScore = -1;
+    long bestScore = -1, bestDef = -1;
     for (const auto& f : d.files)
     {
         const auto it = f.settings.find (changed);
         if (it == f.settings.end() || it->second != value) continue;   // the turned control is law
-        long score = 0;
+        long score = 0, defMatch = 0;
         for (const auto& c : d.controls)
         {
             if (c.name == changed) continue;
@@ -387,13 +389,77 @@ inline const FileEntry* resolve (const Device& d, Settings& settings,
             const auto dv = defaults.count (c.name) ? defaults.at (c.name) : std::string();
             if (fv == rv) score += 4;                                  // keep what the user had
             else if (fv == dv) score += 1;                             // else prefer the default
+            if (fv == dv) ++defMatch;
         }
-        if (score > bestScore) { bestScore = score; best = &f; }
+        // Deterministic: higher score wins; on a TIE, prefer the file sitting on more defaults
+        // (the contract's "break ties toward each control's default").
+        if (score > bestScore || (score == bestScore && defMatch > bestDef))
+        {
+            bestScore = score; bestDef = defMatch; best = &f;
+        }
     }
-    if (best == nullptr) best = &d.files.front();                      // value never captured — bail sanely
+    if (best == nullptr)
+    {
+        // The turned value was never captured on this control. Honour the pin — do NOT return a file
+        // that contradicts the user's turn; leave settings as they were and report "no such file".
+        if (hadChanged) settings[changed] = prevChanged; else settings.erase (changed);
+        return nullptr;
+    }
     settings = best->settings;
     return best;
 }
+
+// ---------------------------------------------------------------------------------------------
+// The rig CHAIN — a pack (.orbitrig) is an ordered list of stages. std-only model; the rig.json
+// loader that fills it lives in namz_rig_load.h (that one needs a JSON parser). A player walks the
+// chain in signal order and SKIPS any stage whose kind it doesn't understand.
+// ---------------------------------------------------------------------------------------------
+
+enum class StageKind { Nam, Ir, Eq, Unknown };
+
+inline StageKind stageKindFrom (const std::string& s)
+{
+    if (s == "nam") return StageKind::Nam;
+    if (s == "ir")  return StageKind::Ir;
+    if (s == "eq")  return StageKind::Eq;
+    return StageKind::Unknown;
+}
+
+// The software-EQ stage carries author GUIDANCE only (the tone stack is always software, never
+// captured): optional per-knob defaults, knobs to hide, a simplified single-"TONE" mode, and
+// whether to draw the response curve. Absent stage = the player's own default EQ.
+struct EqHints
+{
+    std::string model;                              // e.g. "fmv" (empty = player default)
+    std::map<std::string, std::string> defaults;    // knob name -> starting value
+    std::vector<std::string> hidden;                // knobs to hide (e.g. "hpf", "lpf")
+    bool toneOnly  = false;                          // collapse to one "TONE" knob
+    bool showCurve = true;                           // draw the EQ curve
+};
+
+struct Stage
+{
+    StageKind kind = StageKind::Unknown;
+    std::string rawKind;                            // the original string (preserved for unknown kinds)
+    std::string slot;                               // pedal | preamp | amp | poweramp | rig
+    std::string make, model, gearType;              // gear caption
+    Device device;                                  // Nam: controls + files (the selectable matrix)
+    std::vector<std::string> irFiles;               // Ir: cabinet impulse file names
+    EqHints eq;                                     // Eq: the guidance above
+};
+
+struct Rig
+{
+    std::string rigId, name, modeledBy;
+    std::vector<Stage> chain;                        // signal order
+
+    // First stage the player can actually run (kind != Unknown), or nullptr.
+    const Stage* firstKnown() const
+    {
+        for (const auto& s : chain) if (s.kind != StageKind::Unknown) return &s;
+        return nullptr;
+    }
+};
 
 } // namespace namz::rig
 

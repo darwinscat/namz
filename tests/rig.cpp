@@ -4,8 +4,10 @@
 // rest, fall back toward defaults; settings snap to the chosen file's real combination).
 
 #include "../include/namz_rig.h"
+#include "../include/namz_rig_load.h"
 
 #include <cstdio>
+#include <string>
 
 using namespace namz::rig;
 
@@ -94,6 +96,29 @@ int main()
         ok (mk->controls.empty() && mk->files.size() == 1, "single plain file = zero visible controls");
     }
 
+    // --- resolve() contract hardening (crew) -----------------------------------------------------
+    {
+        Device d;
+        d.controls = { { "gain", Role::Gain, {"07h","12h","17h"} } };
+        d.files = { {"a", {{"gain","07h"}}}, {"b", {{"gain","12h"}}} };   // 17h NOT captured
+
+        // CONTRACT: turning gain to an UNCAPTURED value must NOT return a file that contradicts the
+        // pin — it returns nullptr and leaves settings untouched (turned control is law).
+        Settings s = { {"gain","07h"} };
+        const auto* r = resolve (d, s, "gain", "17h");
+        ok (r == nullptr, "uncaptured turn -> nullptr (no file violates the pin)");
+        ok (s.at ("gain") == "07h", "settings unchanged after a refused turn");
+
+        // CONTRACT: on a score TIE, prefer the file sitting on the default. channel default = first
+        // value "a"; both candidates match the turned control, tie on the rest -> pick the default.
+        Device d2;
+        d2.controls = { { "ch", Role::Channel, {"green","red"} }, { "boost", Role::Boost, {"off","on"} } };
+        d2.files = { {"x", {{"ch","red"},{"boost","on"}}}, {"y", {{"ch","green"},{"boost","on"}}} };
+        Settings s2 = { {"ch","green"}, {"boost","off"} };
+        const auto* r2 = resolve (d2, s2, "boost", "on");   // both x,y have boost=on; tie on ch
+        ok (r2 != nullptr && r2->id == "y", "tie broken toward the default channel (green), not first-seen");
+    }
+
     // --- legacy topology (poweramps) --------------------------------------------------------------
     {
         auto legacy = [] (std::string base) { return FileMeta { base, base, {} }; };
@@ -102,6 +127,133 @@ int main()
         bool topo = false;
         for (const auto& c : devs[0].controls) topo = topo || c.role == Role::Topology;
         ok (topo, "topology control detected from PP/SE tokens");
+    }
+
+    // --- rig.json manifest loading (theory-first falsification of the .orbitrig contracts) -----
+    const std::string manifest = R"({
+      "format": "orbitrig", "schema": 1,
+      "rig_id": "dc-revolt", "name": "ReVolt Stack", "modeled_by": "Darwin's Cat",
+      "chain": [
+        { "kind": "nam", "slot": "preamp",
+          "gear": {"make":"Two Notes","model":"ReVolt Guitar","type":"pedal"},
+          "controls": [
+            {"name":"channel","role":"channel","values":["green","red"]},
+            {"name":"gain","role":"gain","values":["07h","12h","17h"]} ],
+          "files": [
+            {"file":"a.namz","settings":{"channel":"green","gain":"07h"}},
+            {"file":"b.namz","settings":{"channel":"green","gain":"12h"}},
+            {"file":"c.namz","settings":{"channel":"red","gain":"17h"}} ] },
+        { "kind": "eq", "model": "fmv", "tone_only": true, "show_curve": false,
+          "hidden": ["hpf","lpf"], "defaults": {"tight_hz":"120","bass":"0.5"} }
+      ] })";
+
+    // CONTRACT: manifest parses into the declared chain, in order, with gear/controls/files.
+    {
+        const auto rig = loadRigManifest (manifest);
+        ok (rig.rigId == "dc-revolt" && rig.name == "ReVolt Stack", "manifest identity parsed");
+        ok (rig.chain.size() == 2, "two stages in order");
+        ok (rig.chain[0].kind == StageKind::Nam && rig.chain[0].slot == "preamp", "stage 0 = nam/preamp");
+        ok (rig.chain[0].device.controls.size() == 2 && rig.chain[0].device.files.size() == 3,
+            "controls + files from manifest");
+        ok (rig.chain[0].model == "ReVolt Guitar", "gear model parsed");
+
+        // CONTRACT: EQ is guidance only — hints round-trip.
+        const auto& eq = rig.chain[1].eq;
+        ok (rig.chain[1].kind == StageKind::Eq, "stage 1 = eq");
+        ok (eq.model == "fmv" && eq.toneOnly && ! eq.showCurve, "eq flags parsed");
+        ok (eq.hidden.size() == 2 && eq.defaults.at ("tight_hz") == "120", "eq hidden + defaults parsed");
+
+        // CONTRACT: the selector works on a manifest-loaded Nam stage.
+        auto s = defaultSettings (rig.chain[0].device);
+        ok (s["gain"] == "12h", "noon-gain default on the manifest device");
+        const auto* f = resolve (rig.chain[0].device, s, "gain", "17h");
+        ok (f != nullptr && f->id == "c.namz", "turning gain resolves the captured file");
+    }
+
+    // CONTRACT: manifest is the SOURCE OF TRUTH (decision A) — its controls win over per-file meta.
+    {
+        // file meta claims a THIRD channel the manifest never lists; manifest must dominate.
+        std::vector<FileMeta> metas = {
+            { "a.namz", "a", { {"controls","channel:channel=green|red|blue"}, {"rig_id","dc-revolt"},
+                               {"settings.channel","green"}, {"settings.gain","07h"} } } };
+        const auto rig = loadRig (manifest, metas);
+        ok (rig.chain.size() == 2 && rig.chain[0].device.controls[0].values.size() == 2,
+            "manifest controls (2 channels) win over file meta (3 channels)");
+    }
+
+    // CONTRACT: an unknown stage kind is KEPT but SKIPPED, never fails the load.
+    {
+        const std::string withReverb = R"({"format":"orbitrig","chain":[
+            {"kind":"reverb","mix":0.3},
+            {"kind":"nam","slot":"preamp","controls":[{"name":"gain","role":"gain","values":["12h"]}],
+             "files":[{"file":"x.namz","settings":{"gain":"12h"}}]} ]})";
+        const auto rig = loadRigManifest (withReverb);
+        ok (rig.chain.size() == 2, "unknown stage still occupies the chain");
+        ok (rig.chain[0].kind == StageKind::Unknown && rig.chain[0].rawKind == "reverb",
+            "unknown kind preserved verbatim");
+        ok (rig.firstKnown() != nullptr && rig.firstKnown()->kind == StageKind::Nam,
+            "firstKnown() skips the unknown stage");
+    }
+
+    // CONTRACT: a broken/absent manifest never crashes and falls back to file metas.
+    {
+        ok (loadRigManifest ("not json at all").chain.empty(), "garbage manifest -> empty chain");
+        ok (loadRigManifest (R"({"format":"something-else","chain":[]})").chain.empty(),
+            "wrong format -> empty chain");
+        ok (loadRigManifest (R"({"format":"orbitrig","chain":"oops"})").chain.empty(),
+            "chain not an array -> empty chain");
+
+        // fallback path: no manifest, standalone .namz meta rebuilds a Nam stage.
+        std::vector<FileMeta> metas = {
+            { "g.namz", "g", { {"controls","gain:gain=07h|12h"}, {"gear_model","Solo"},
+                               {"settings.gain","07h"} } },
+            { "h.namz", "h", { {"controls","gain:gain=07h|12h"}, {"gear_model","Solo"},
+                               {"settings.gain","12h"} } } };
+        const auto rig = loadRig ("", metas);
+        ok (rig.chain.size() == 1 && rig.chain[0].kind == StageKind::Nam, "fallback wraps a Nam stage");
+        ok (rig.chain[0].device.files.size() == 2, "fallback carries both files");
+        ok (rig.name == "Solo", "fallback names the rig after the device");
+    }
+
+    // CONTRACT (crew): wrong-typed optional EQ flags never crash the load — they fall to defaults.
+    {
+        const std::string bad = R"({"format":"orbitrig","chain":[
+            {"kind":"eq","tone_only":"true","show_curve":0} ]})";
+        const auto rig = loadRigManifest (bad);   // must not throw/crash
+        ok (rig.chain.size() == 1 && ! rig.chain[0].eq.toneOnly && rig.chain[0].eq.showCurve,
+            "non-boolean eq flags fall back to defaults, no crash");
+    }
+
+    // CONTRACT (crew): a structured (object/array) EQ default is skipped, never dump()ed —
+    // a hostile deep-nested value must not overflow the stack.
+    {
+        std::string nested = std::string (2000, '[') + "0" + std::string (2000, ']');
+        const std::string bomb = std::string (R"({"format":"orbitrig","chain":[{"kind":"eq","defaults":{"x":)")
+                               + nested + R"(,"bass":"0.5"}}]})";
+        const auto rig = loadRigManifest (bomb);   // must not crash
+        ok (rig.chain.size() == 1, "deep-nested eq default did not crash the load");
+        ok (rig.chain[0].eq.defaults.count ("x") == 0 && rig.chain[0].eq.defaults.at ("bass") == "0.5",
+            "structured default skipped, scalar default kept");
+    }
+
+    // CONTRACT (crew): a VALID manifest with an empty chain is the source of truth — NOT a fallback
+    // trigger (decision A). loadRig must return the empty rig, not rebuild from file metas.
+    {
+        std::vector<FileMeta> metas = {
+            { "z.namz", "z", { {"controls","gain:gain=07h"}, {"gear_model","Should Not Appear"},
+                               {"settings.gain","07h"} } } };
+        const auto rig = loadRig (R"({"format":"orbitrig","name":"Empty","chain":[]})", metas);
+        ok (rig.chain.empty() && rig.name == "Empty",
+            "valid empty manifest wins over file metas (no spurious fallback)");
+    }
+
+    // CONTRACT: an IR stage carries its impulse file names.
+    {
+        const std::string ir = R"({"format":"orbitrig","chain":[
+            {"kind":"ir","slot":"rig","files":["V30-57.wav","V30-121.wav"]} ]})";
+        const auto rig = loadRigManifest (ir);
+        ok (rig.chain.size() == 1 && rig.chain[0].kind == StageKind::Ir, "ir stage parsed");
+        ok (rig.chain[0].irFiles.size() == 2, "ir files carried");
     }
 
     std::printf (failures == 0 ? "ALL RIG TESTS PASSED\n" : "%d FAILURE(S)\n", failures);

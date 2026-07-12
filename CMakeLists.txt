@@ -54,7 +54,7 @@ if(NAMZ_BUILD_TESTS)
   add_test(NAME namz_adversarial COMMAND namz_test_adversarial)
 
   add_executable(namz_test_rig tests/rig.cpp)
-  target_link_libraries(namz_test_rig PRIVATE namz::rig)
+  target_link_libraries(namz_test_rig PRIVATE namz::rig namz::namz)   # namz::namz brings nlohmann for the rig.json loader
   add_test(NAME namz_rig COMMAND namz_test_rig)
 
   # The reference consumer of the cross-language conformance vectors (conformance/).
@@ -67,7 +67,7 @@ endif()
 
 # --- install (so downstreams can find_package or just copy the header) --------------------------------
 include(GNUInstallDirs)
-install(FILES include/namz.h include/namz_rig.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES include/namz.h include/namz_rig.h include/namz_rig_load.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(NAMZ_BUILD_CLI)
   install(TARGETS namz_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
