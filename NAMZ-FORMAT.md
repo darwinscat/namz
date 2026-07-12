@@ -94,6 +94,58 @@ positions), `boost` (presence token; `settings.<boost control>` is `on`/`off` an
 files sharing `rig_id` (else `gear_model`) + `controls` IS one device; each file's `settings.*`
 places it in that device's matrix.
 
+## The `.orbitrig` pack
+
+A **device pack** ships a whole modeled rig as one unit — a folder (for editing/sync) or, for
+sharing, a `.orbitrig.zip` (zip the `.namz` together: the byte-plane shuffle pays off across the
+family, which is why the codec stores rather than deflates each file). A player loads it by
+drag-dropping the zip or the folder, or via an "Import" action.
+
+```
+ReVolt Guitar.orbitrig/            (share as ReVolt Guitar.orbitrig.zip)
+  rig.json                         the manifest — chain + controls + file index + EQ hints
+  ReVolt-green-07h.namz            models (codec=store), one per knob/switch combination
+  ...
+```
+
+**`rig.json`** is the pack's source of truth; each `.namz` still carries its own
+`settings.*`/`controls`/`rig_id`/`slot` header, so a single file pulled out of the pack still knows
+what it is (a player with no manifest falls back to scanning `.namz` + reading those headers).
+
+```json
+{
+  "format": "orbitrig", "schema": 1,
+  "rig_id": "dc-revolt-guitar", "name": "ReVolt Guitar Stack", "modeled_by": "Darwin's Cat",
+  "chain": [
+    { "kind": "nam", "slot": "preamp",
+      "gear": { "make": "Two Notes", "model": "ReVolt Guitar", "type": "pedal" },
+      "controls": [
+        { "name": "channel", "role": "channel", "values": ["green","orange","red"] },
+        { "name": "boost",   "role": "boost",   "values": ["off","on"] },
+        { "name": "gain",    "role": "gain",    "values": ["07h","...","17h"] }
+      ],
+      "files": [
+        { "file": "ReVolt-green-07h.namz", "settings": {"channel":"green","boost":"off","gain":"07h"} }
+      ]
+    }
+  ]
+}
+```
+
+- **`chain`** — stages in signal order. A stage has a `kind`: `nam` (a captured non-linear device),
+  `ir` (a linear cabinet impulse — future), or `eq` (a software tone stack — see below). A player
+  that meets a `kind` it doesn't know **skips that stage** rather than failing, so new stage types
+  never break old players. `slot` (`pedal`/`preamp`/`amp`/`poweramp`/`rig`) routes the stage.
+- **`files`** — the authoritative list for a `nam` stage: each entry is a model + its `settings`.
+  (A manifest-less folder is read by scanning `*.namz` instead.)
+- **`eq` stage** — the tone stack is ALWAYS software; this stage is optional author guidance for the
+  player's EQ, never captured audio. Fields (all optional): `model` (e.g. `fmv`), `defaults` (a
+  starting value for any EQ knob), `hidden` (knobs to hide, e.g. `["hpf","lpf"]`), `tone_only` (a
+  single simplified "TONE" knob instead of the full EQ), `show_curve` (draw the EQ response or not).
+
+Additive keys never bump `schema`; a bump is reserved for an incompatible change (avoided by
+design). The reference reader/selector is `namz::rig`.
+
 ## Versioning
 
 `formatVersion`, `codec`, and `dtype` are single bytes with reserved values, so the format can grow
