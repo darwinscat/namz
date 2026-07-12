@@ -85,7 +85,13 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     ctl.role = roleFromString (detail::jstr (cj, "role", "generic"));
                     if (auto v = cj.find ("values"); v != cj.end() && v->is_array())
                         for (const auto& vv : *v)
-                            if (vv.is_string()) ctl.values.push_back (vv.get<std::string>());
+                        {
+                            // The format types all-digit values to int (NAMZ-FORMAT §metadata), so a
+                            // value may arrive as a JSON number/bool — stringify scalars, skip only
+                            // structured values (mirrors the EQ-defaults handling below).
+                            if (vv.is_string())            ctl.values.push_back (vv.get<std::string>());
+                            else if (! vv.is_structured()) ctl.values.push_back (vv.dump());
+                        }
                     if (! ctl.name.empty() && ! ctl.values.empty()) st.device.controls.push_back (std::move (ctl));
                 }
             if (auto f = sj.find ("files"); f != sj.end() && f->is_array())
@@ -96,7 +102,12 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     fe.id = detail::jstr (fj, "file");
                     if (auto s = fj.find ("settings"); s != fj.end() && s->is_object())
                         for (auto it = s->begin(); it != s->end(); ++it)
-                            if (it.value().is_string()) fe.settings[it.key()] = it.value().get<std::string>();
+                        {
+                            // int-typed knob positions arrive as JSON numbers — stringify scalars,
+                            // skip structured (else the whole stage becomes unselectable).
+                            if (it.value().is_string())            fe.settings[it.key()] = it.value().get<std::string>();
+                            else if (! it.value().is_structured()) fe.settings[it.key()] = it.value().dump();
+                        }
                     if (! fe.id.empty()) st.device.files.push_back (std::move (fe));
                 }
         }

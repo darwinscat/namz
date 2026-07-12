@@ -268,6 +268,21 @@ namespace detail
         return family.empty() ? base : family;
     }
 
+    // True when EVERY token of the basename is a recognized control token (no leftover name word) —
+    // buildDevices then groups such files together instead of making each its own device.
+    inline bool legacyIsAllTokens (const std::string& base)
+    {
+        const auto ts = tokens (base);
+        if (ts.empty()) return false;
+        for (const auto& tok : ts)
+        {
+            const auto l = lower (tok);
+            if (! (isColour (l) || isChN (l) || isClock (l) || l == "boost" || isTopology (l)))
+                return false;
+        }
+        return true;
+    }
+
     inline void addValue (std::vector<std::string>& values, const std::string& v)
     {
         if (std::find (values.begin(), values.end(), v) == values.end()) values.push_back (v);
@@ -285,18 +300,28 @@ inline std::vector<Device> buildDevices (const std::vector<FileMeta>& files)
     {
         Device d;
         bool metaDriven = false;
+        std::string gearModel;                             // to re-merge files that omit rig_id
         std::vector<std::string> channels, gains, topos;   // legacy dimension unions, insertion order
         bool anyBoostOn = false, anyBoostOff = false;
     };
     std::vector<Acc> accs;
 
-    auto accFor = [&accs] (const std::string& key, const std::string& family) -> Acc& {
+    // Group key priority: a stamped rig_id, else the gear_model / family name. A file that omits
+    // rig_id but shares a family's gear_model MERGES into it (the spec promises rig_id grouping
+    // "survives" — inconsistent stamping across a family must not split it).
+    auto accFor = [&accs] (const std::string& rid, const std::string& gearModel,
+                           const std::string& family) -> Acc& {
         for (auto& a : accs)
-            if ((! a.d.rigId.empty() && a.d.rigId == key) || (a.d.rigId.empty() && a.d.family == key))
-                return a;
+        {
+            if (! rid.empty() && a.d.rigId == rid) return a;                     // same explicit id
+            if (rid.empty() && ! a.d.rigId.empty() && ! gearModel.empty()
+                && a.gearModel == gearModel) return a;                           // adopt into the id'd acc
+            if (rid.empty() && a.d.rigId.empty() && a.d.family == family) return a;
+        }
         accs.emplace_back();
-        accs.back().d.rigId  = key == family ? std::string() : key;
-        accs.back().d.family = family;
+        accs.back().d.rigId    = rid;
+        accs.back().gearModel  = gearModel;
+        accs.back().d.family   = family;
         return accs.back();
     };
 
@@ -312,27 +337,47 @@ inline std::vector<Device> buildDevices (const std::vector<FileMeta>& files)
             Settings s;
             for (const auto& [k, v] : f.meta)
                 if (k.rfind ("settings.", 0) == 0) s[k.substr (9)] = v;
-            const auto family = ! metaAt ("gear_model").empty() ? metaAt ("gear_model") : f.filenameBase;
+            const auto gm = metaAt ("gear_model");
+            const auto family = ! gm.empty() ? gm : f.filenameBase;
             const auto rid = metaAt ("rig_id");
-            auto& a = accFor (! rid.empty() ? rid : family, family);
+            auto& a = accFor (rid, gm, family);
             a.metaDriven = true;
-            if (a.d.rigId.empty()) a.d.rigId = rid;
+            if (a.d.rigId.empty() && ! rid.empty()) a.d.rigId = rid;   // a later id'd file names the group
+            if (a.gearModel.empty()) a.gearModel = gm;
             if (a.d.slot.empty())
                 a.d.slot = ! metaAt ("slot").empty() ? metaAt ("slot") : metaAt ("gear_type");
             if (a.d.controls.empty()) a.d.controls = parseControlsSpec (spec);
             a.d.files.push_back ({ f.id, std::move (s) });
             continue;
         }
-        // legacy filename fallback
+        // legacy filename fallback. When the basename is ALL tokens (no leftover name), group them
+        // under one key so a nameless legacy pack still forms ONE device (else every combination
+        // splits into its own control-less device).
         Settings s;
-        const auto family = detail::legacyParse (f.filenameBase, s);
-        auto& a = accFor (family, family);
+        std::string family = detail::legacyParse (f.filenameBase, s);
+        std::string groupFamily = family;
+        if (family == f.filenameBase && detail::legacyIsAllTokens (f.filenameBase))
+            groupFamily = std::string();                              // token-only: shared empty key
+        auto& a = accFor (std::string(), std::string(), groupFamily);
         detail::addValue (a.channels, s.count ("channel") ? s["channel"] : std::string());
         detail::addValue (a.gains,    s.count ("gain") ? s["gain"] : std::string());
         detail::addValue (a.topos,    s.count ("topology") ? s["topology"] : std::string());
         (s["boost"] == "on" ? a.anyBoostOn : a.anyBoostOff) = true;
         a.d.files.push_back ({ f.id, std::move (s) });
     }
+
+    // The settings-trim keeps files matchable against the visible controls — needed for BOTH paths
+    // (meta files carry settings.* for controls the group may not expose; without trimming, find()
+    // and defaults miss and resolve() leaks stray keys).
+    auto trimToControls = [] (Device& d) {
+        for (auto& fe : d.files)
+        {
+            Settings kept;
+            for (const auto& c : d.controls)
+                if (const auto it = fe.settings.find (c.name); it != fe.settings.end()) kept[c.name] = it->second;
+            fe.settings = std::move (kept);
+        }
+    };
 
     std::vector<Device> out;
     for (auto& a : accs)
@@ -347,15 +392,8 @@ inline std::vector<Device> buildDevices (const std::vector<FileMeta>& files)
             if (a.topos.size() > 1)    a.d.controls.push_back ({ "topology", Role::Topology, a.topos });
             if (a.anyBoostOn && a.anyBoostOff) a.d.controls.push_back ({ "boost", Role::Boost, { "off", "on" } });
             if (a.gains.size() > 1)    a.d.controls.push_back ({ "gain", Role::Gain, a.gains });
-            // Trim per-file settings down to the visible controls so exact matches work.
-            for (auto& fe : a.d.files)
-            {
-                Settings kept;
-                for (const auto& c : a.d.controls)
-                    if (const auto it = fe.settings.find (c.name); it != fe.settings.end()) kept[c.name] = it->second;
-                fe.settings = std::move (kept);
-            }
         }
+        trimToControls (a.d);
         out.push_back (std::move (a.d));
     }
     return out;
