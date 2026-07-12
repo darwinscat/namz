@@ -247,6 +247,45 @@ int main()
             "valid empty manifest wins over file metas (no spurious fallback)");
     }
 
+    // CONTRACT (crew/Opus HIGH): int-typed settings/values in a manifest are NOT dropped — the
+    // format types all-digit values to int, so a stage with numeric settings must stay selectable.
+    {
+        const std::string numeric = R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"preamp",
+            "controls":[{"name":"gain","role":"gain","values":[3,5,8]}],
+            "files":[{"file":"a.namz","settings":{"gain":3}},
+                     {"file":"b.namz","settings":{"gain":5}},
+                     {"file":"c.namz","settings":{"gain":8}}]}]})";
+        const auto rig = loadRigManifest (numeric);
+        ok (rig.chain.size() == 1 && rig.chain[0].device.controls.size() == 1
+                && rig.chain[0].device.controls[0].values.size() == 3,
+            "numeric control values stringified, not dropped");
+        auto& dev = rig.chain[0].device;
+        auto s = defaultSettings (dev);
+        const auto* f = resolve (dev, s, "gain", "8");
+        ok (f != nullptr && f->id == "c.namz", "numeric settings resolve (stage is selectable)");
+    }
+
+    // CONTRACT (Opus MED): a legacy pack whose names are ALL tokens still forms ONE device.
+    {
+        auto legacy = [] (std::string base) { return FileMeta { base, base, {} }; };
+        const auto devs = buildDevices ({ legacy ("blue-07h"), legacy ("red-07h"),
+                                          legacy ("blue-12h"), legacy ("red-12h") });
+        ok (devs.size() == 1, "token-only legacy files coalesce into one device");
+        ok (devs[0].files.size() == 4, "all four combos in the one device");
+    }
+
+    // CONTRACT (Opus MED): rig_id stamped on only SOME files of a family still groups as one.
+    {
+        std::vector<FileMeta> metas = {
+            { "a", "a", { {"controls","gain:gain=07h|12h"}, {"gear_model","ReVolt"}, {"rig_id","R"},
+                          {"settings.gain","07h"} } },
+            { "b", "b", { {"controls","gain:gain=07h|12h"}, {"gear_model","ReVolt"},
+                          {"settings.gain","12h"} } } };   // same gear_model, NO rig_id
+        const auto devs = buildDevices (metas);
+        ok (devs.size() == 1 && devs[0].files.size() == 2,
+            "partial rig_id stamping merges by gear_model (grouping survives)");
+    }
+
     // CONTRACT: an IR stage carries its impulse file names.
     {
         const std::string ir = R"({"format":"orbitrig","chain":[
