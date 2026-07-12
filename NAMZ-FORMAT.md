@@ -74,6 +74,26 @@ weight decode. Conventional fields:
 `pnp`/`npn`/`bjt`/`transistor`, `fet`/`jfet`/`mosfet`, `dsp`/`chip`/`ic`, `diode`. Examples: `tube:4`,
 `pnp:1`, `tube:1,pnp:1` (a tube + a transistor).
 
+### Capture-identity keys (knob/switch positions)
+
+A capture tool that models one hardware device across MANY knob/switch positions (OrbitNamCapture)
+stamps each file's position into the header, so a player can build its device selector from metadata
+instead of parsing filenames. All keys are flat strings (the header's contract):
+
+| field | example | meaning |
+|---|---|---|
+| `settings.<control>` | `settings.gain` = `12h` | THIS file's position of one control |
+| `controls` | `channel:channel=green\|orange\|red; boost:boost=off\|on; gain:gain=07h\|08h\|…\|17h` | the whole device's control spec |
+| `rig_id` | `dc-revolt-guitar` | stable device identity — grouping survives display renames |
+| `slot` | `preamp` | where the device sits in a player's chain: `pedal` · `preamp` · `amp` · `poweramp` · `rig` |
+
+**`controls` spec** — `;`-separated entries of `<name>:<role>=<value>\|<value>\|…` in capture order.
+Roles mirror the filename-token grammar: `channel` (colour word or `chN`), `gain` (`NNh` clock
+positions), `boost` (presence token; `settings.<boost control>` is `on`/`off` and the conventional
+`boost` bool is stamped alongside), `topology` (`PP`/`SE`), `generic` (a free token). A family of
+files sharing `rig_id` (else `gear_model`) + `controls` IS one device; each file's `settings.*`
+places it in that device's matrix.
+
 ## Versioning
 
 `formatVersion`, `codec`, and `dtype` are single bytes with reserved values, so the format can grow
