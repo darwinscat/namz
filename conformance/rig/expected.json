@@ -1,0 +1,27 @@
+{
+  "rig": {
+    "rig_id": "namz-golden-rig",
+    "name": "Golden Amp",
+    "modeled_by": "namz conformance"
+  },
+  "stage": {
+    "slot": "preamp",
+    "gear": { "make": "Darwin's Cat", "model": "Golden Amp", "type": "amp" },
+    "controls": "channel:channel=green|red; gain:gain=07h|12h|17h",
+    "files": {
+      "Golden-green-07h.namz": { "channel": "green", "gain": "07h" },
+      "Golden-green-12h.namz": { "channel": "green", "gain": "12h" },
+      "Golden-red-07h.namz":   { "channel": "red",   "gain": "07h" }
+    }
+  },
+  "selection": [
+    { "from": "Golden-green-07h.namz", "turn": ["gain", "12h"],    "expect": "Golden-green-12h.namz",
+      "why": "exact captured combination" },
+    { "from": "Golden-green-12h.namz", "turn": ["channel", "red"], "expect": "Golden-red-07h.namz",
+      "why": "red was only captured at 07h — the pinned channel wins, gain falls back" },
+    { "from": "Golden-red-07h.namz",   "turn": ["gain", "12h"],    "expect": "Golden-green-12h.namz",
+      "why": "12h was only captured on green — the pinned gain wins, channel flips" },
+    { "from": "Golden-green-07h.namz", "turn": ["gain", "17h"],    "expect": null,
+      "why": "17h is declared on the dial but NO file carries it — never a contradicting file" }
+  ]
+}

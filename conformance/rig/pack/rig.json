@@ -1,0 +1,60 @@
+{
+  "chain": [
+    {
+      "controls": [
+        {
+          "name": "channel",
+          "role": "channel",
+          "values": [
+            "green",
+            "red"
+          ]
+        },
+        {
+          "name": "gain",
+          "role": "gain",
+          "values": [
+            "07h",
+            "12h",
+            "17h"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "file": "Golden-green-07h.namz",
+          "settings": {
+            "channel": "green",
+            "gain": "07h"
+          }
+        },
+        {
+          "file": "Golden-green-12h.namz",
+          "settings": {
+            "channel": "green",
+            "gain": "12h"
+          }
+        },
+        {
+          "file": "Golden-red-07h.namz",
+          "settings": {
+            "channel": "red",
+            "gain": "07h"
+          }
+        }
+      ],
+      "gear": {
+        "make": "Darwin's Cat",
+        "model": "Golden Amp",
+        "type": "amp"
+      },
+      "kind": "nam",
+      "slot": "preamp"
+    }
+  ],
+  "format": "orbitrig",
+  "modeled_by": "namz conformance",
+  "name": "Golden Amp",
+  "rig_id": "namz-golden-rig",
+  "schema": 1
+}
