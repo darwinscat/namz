@@ -1,0 +1,3 @@
+# Conformance fixtures are BYTE-EXACT contracts — no checkout may rewrite them (Windows CRLF
+# conversion of a golden rig.json breaks the writer's byte-for-byte comparison).
+conformance/** -text
