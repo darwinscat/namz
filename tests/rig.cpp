@@ -5,6 +5,7 @@
 
 #include "../include/namz_rig.h"
 #include "../include/namz_rig_load.h"
+#include "../include/namz_rig_write.h"
 
 #include <cstdio>
 #include <string>
@@ -293,6 +294,92 @@ int main()
         const auto rig = loadRigManifest (ir);
         ok (rig.chain.size() == 1 && rig.chain[0].kind == StageKind::Ir, "ir stage parsed");
         ok (rig.chain[0].irFiles.size() == 2, "ir files carried");
+    }
+
+    // --- WRITER (namz_rig_write.h): load(write(rig)) == rig for every carried field -------------
+    {
+        Rig rig;
+        rig.rigId = "dc-revolt-guitar"; rig.name = "ReVolt Guitar"; rig.modeledBy = "Darwin's Cat";
+
+        Stage nam;
+        nam.kind = StageKind::Nam; nam.rawKind = "nam"; nam.slot = "preamp";
+        nam.make = "Two Notes"; nam.model = "ReVolt Guitar"; nam.gearType = "pedal";
+        nam.device.rigId = rig.rigId; nam.device.slot = nam.slot; nam.device.family = nam.model;
+        nam.device.controls = parseControlsSpec ("channel:channel=green|red; boost:boost=off|on; gain:gain=07h|12h");
+        nam.device.files = { { "ReVolt-green-07h.namz", { { "channel", "green" }, { "boost", "off" }, { "gain", "07h" } } },
+                             { "ReVolt-red-12h.namz",   { { "channel", "red" },   { "boost", "off" }, { "gain", "12h" } } } };
+
+        Stage eq;
+        eq.kind = StageKind::Eq; eq.rawKind = "eq";
+        eq.eq.model = "fmv"; eq.eq.toneOnly = true; eq.eq.showCurve = false;
+        eq.eq.defaults = { { "tight_hz", "120" } }; eq.eq.hidden = { "hpf", "lpf" };
+
+        Stage ir;
+        ir.kind = StageKind::Ir; ir.rawKind = "ir"; ir.slot = "rig";
+        ir.irFiles = { "V30-57.wav" };
+
+        Stage odd;                         // a kind this model doesn't know — rawKind must survive
+        odd.kind = StageKind::Unknown; odd.rawKind = "hologram"; odd.slot = "rig";
+
+        rig.chain = { nam, eq, ir, odd };
+
+        bool valid = false;
+        const auto back = loadRigManifest (writeManifest (rig), &valid);
+        ok (valid, "written manifest is a valid orbitrig manifest");
+        ok (back.rigId == rig.rigId && back.name == rig.name && back.modeledBy == rig.modeledBy,
+            "rig identity round-trips");
+        ok (back.chain.size() == 4, "all four stages round-trip");
+        if (back.chain.size() == 4)
+        {
+            const auto& n = back.chain[0];
+            ok (n.kind == StageKind::Nam && n.slot == "preamp" && n.make == "Two Notes"
+                && n.model == "ReVolt Guitar" && n.gearType == "pedal", "nam stage identity round-trips");
+            ok (buildControlsSpec (n.device.controls) == buildControlsSpec (nam.device.controls),
+                "controls round-trip in order");
+            ok (n.device.files.size() == 2 && n.device.files[1].id == "ReVolt-red-12h.namz"
+                && n.device.files[1].settings == nam.device.files[1].settings, "file index round-trips");
+            const auto& e = back.chain[1];
+            ok (e.kind == StageKind::Eq && e.eq.model == "fmv" && e.eq.toneOnly && ! e.eq.showCurve
+                && e.eq.defaults.at ("tight_hz") == "120" && e.eq.hidden.size() == 2, "eq hints round-trip");
+            ok (back.chain[2].kind == StageKind::Ir && back.chain[2].irFiles == ir.irFiles, "ir stage round-trips");
+            ok (back.chain[3].kind == StageKind::Unknown && back.chain[3].rawKind == "hologram",
+                "unknown stage keeps its rawKind (never silently dropped)");
+        }
+
+        // stampMeta → buildDevices closes the loop: per-file header keys a capture tool writes are
+        // exactly what device building reads back — byte compatibility by construction.
+        std::vector<FileMeta> metas;
+        for (const auto& fe : nam.device.files)
+        {
+            FileMeta f;
+            f.id = fe.id; f.filenameBase = fe.id;
+            f.meta = stampMeta (rig, nam, fe.settings);
+            metas.push_back (std::move (f));
+        }
+        ok (metas[0].meta.at ("controls") == buildControlsSpec (nam.device.controls), "stamped controls spec");
+        ok (metas[0].meta.at ("rig_id") == "dc-revolt-guitar" && metas[0].meta.at ("slot") == "preamp"
+            && metas[0].meta.at ("gear_make") == "Two Notes" && metas[0].meta.at ("modeled_by") == "Darwin's Cat",
+            "stamped identity keys");
+        ok (metas[0].meta.at ("settings.gain") == "07h" && metas[0].meta.at ("boost") == "false",
+            "stamped positions + the conventional boost flag");
+        const auto devs = buildDevices (metas);
+        ok (devs.size() == 1 && devs[0].rigId == "dc-revolt-guitar"
+            && devs[0].files.size() == 2 && devs[0].controls.size() == 3,
+            "buildDevices reconstructs the device from stamped meta");
+        Settings s = devs[0].files[0].settings;
+        const auto* hit = resolve (devs[0], s, "gain", "12h");
+        ok (hit != nullptr && hit->id == "ReVolt-red-12h.namz", "selection works over stamped meta");
+    }
+
+    // WRITER: a boosted file stamps boost=true; a rig with no boost control stamps no boost key.
+    {
+        Rig rig;
+        Stage st;
+        st.kind = StageKind::Nam;
+        st.device.controls = parseControlsSpec ("boost:boost=off|on");
+        ok (stampMeta (rig, st, { { "boost", "on" } }).at ("boost") == "true", "truthy boost stamps true");
+        st.device.controls = parseControlsSpec ("gain:gain=07h|12h");
+        ok (stampMeta (rig, st, { { "gain", "07h" } }).count ("boost") == 0, "no boost control → no boost key");
     }
 
     std::printf (failures == 0 ? "ALL RIG TESTS PASSED\n" : "%d FAILURE(S)\n", failures);
