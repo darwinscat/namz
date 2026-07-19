@@ -63,6 +63,14 @@ if(NAMZ_BUILD_TESTS)
   target_compile_definitions(namz_test_conformance PRIVATE
     NAMZ_CONFORMANCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/conformance")
   add_test(NAME namz_conformance COMMAND namz_test_conformance)
+
+  # The reference consumer of the RIG conformance fixtures (conformance/rig/) — the executable
+  # .orbitrig contract between a capture tool (writer) and a player (reader).
+  add_executable(namz_test_rig_conformance tests/rig_conformance.cpp)
+  target_link_libraries(namz_test_rig_conformance PRIVATE namz::rig namz::namz)
+  target_compile_definitions(namz_test_rig_conformance PRIVATE
+    NAMZ_CONFORMANCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/conformance")
+  add_test(NAME namz_rig_conformance COMMAND namz_test_rig_conformance)
 endif()
 
 # --- install (so downstreams can find_package or just copy the header) --------------------------------
