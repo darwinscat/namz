@@ -67,7 +67,7 @@ endif()
 
 # --- install (so downstreams can find_package or just copy the header) --------------------------------
 include(GNUInstallDirs)
-install(FILES include/namz.h include/namz_rig.h include/namz_rig_load.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES include/namz.h include/namz_rig.h include/namz_rig_load.h include/namz_rig_write.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(NAMZ_BUILD_CLI)
   install(TARGETS namz_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
