@@ -6,7 +6,7 @@
   },
   "stage": {
     "slot": "preamp",
-    "gear": { "make": "Darwin's Cat", "model": "Golden Amp", "type": "amp" },
+    "gear": { "make": "Darwin's Cat", "model": "Golden Amp", "type": "preamp" },
     "controls": "channel:channel=green|red; gain:gain=07h|12h|17h",
     "files": {
       "Golden-green-07h.namz": { "channel": "green", "gain": "07h" },
