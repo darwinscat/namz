@@ -3,8 +3,10 @@
 // controls, and answer "the user turned one knob — which file plays now?". The player-side twin of
 // the capture-side conventions in NAMZ-FORMAT.md ("Capture-identity keys"): controls come from the
 // `controls` spec + per-file `settings.*` metadata (read them cheaply with namz::readMeta), with a
-// FILENAME-TOKEN FALLBACK for legacy files (the OrbitCab grammar: colour/chN channel, NNh gain,
-// `boost`, PP/SE topology) so packs captured before the convention keep working.
+// nothing else. A filename is a caption, never evidence: it is an id the caller echoes back, and a
+// file with no metadata is a device with no knobs. (Earlier versions parsed names for colour/chN,
+// `NNh` gain, `boost`, PP/SE — that grammar is gone. Knob positions are DEGREES of dial rotation,
+// see detail::degrees, and they live in `settings.*`.)
 // Copyright (c) 2026 Darwin's Cat — Oleh Tsymaienko <oleh@darwinscat.com> & Alisa Lafoks <alisa@darwinscat.com>.
 //
 // Header-only, C++17, std-only (no nlohmann, no namz.h dependency — metadata arrives as an
@@ -14,7 +16,7 @@
 // Selection policy (generalized from OrbitCab's PreampSelector): pin the control the user just
 // changed, keep every other control where it is; when that exact combination was never captured,
 // pick the candidate matching the most remaining controls, breaking ties toward each control's
-// default (noon gain · boost off · first value) and then capture order. The returned file's actual
+// default (mid-sweep gain · boost off · first value) and then capture order. The returned file's actual
 // settings are written back so the UI always shows a combination that truly exists.
 
 #ifndef NAMZ_RIG_H
@@ -53,11 +55,15 @@ inline Role roleFromString (const std::string& s)
     return Role::Generic;
 }
 
+// A control the player draws and the file index selects on. `values` are the CAPTURED positions —
+// for a dial they are degrees of rotation ("0" … "300"), and `sweep` is how far that dial physically
+// turns, so a player can place a knob without knowing the device.
 struct Control
 {
     std::string name;
     Role role = Role::Generic;
     std::vector<std::string> values;   // capture/dial order
+    int sweep = 0;                     // dial rotation, degrees; 0 = not a dial (switch/selector)
 };
 
 using Settings = std::map<std::string, std::string>;
@@ -137,59 +143,30 @@ inline std::vector<Control> parseControlsSpec (const std::string& spec)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Legacy filename tokens (the OrbitCab grammar) — the fallback for files without metadata
+// Value vocabulary
 // ---------------------------------------------------------------------------------------------
 
 namespace detail
 {
-    inline bool isColour (const std::string& l)
+    // A dial position is DEGREES of rotation as a bare integer: "0", "150", "300". (The clock
+    // grammar this format shipped with — "07h".."17h" — is gone: degrees need no lookup table to
+    // place a knob, and `Control::sweep` says how far the dial goes.)
+    inline int degrees (const std::string& v)   // "150" → 150; not a bare integer → -1
     {
-        for (const char* c : { "red", "green", "blue", "yellow", "orange", "purple", "white" })
-            if (l == c) return true;
-        return false;
+        const auto l = trim (v);
+        if (l.empty() || l.size() > 6) return -1;
+        for (char ch : l)
+            if (! std::isdigit ((unsigned char) ch)) return -1;
+        return std::stoi (l);
     }
-    inline bool isChN (const std::string& l)
-    {
-        return l.size() == 3 && l.rfind ("ch", 0) == 0 && l[2] >= '1' && l[2] <= '4';
-    }
-    inline bool isClock (const std::string& l)
-    {
-        if (l.size() < 2 || l.size() > 3 || l.back() != 'h') return false;
-        for (std::size_t i = 0; i + 1 < l.size(); ++i)
-            if (! std::isdigit ((unsigned char) l[i])) return false;
-        return true;
-    }
-    inline int clockHours (const std::string& v)   // "07h" → 7; non-clock → -1
-    {
-        const auto l = lower (trim (v));
-        return isClock (l) ? std::stoi (l.substr (0, l.size() - 1)) : -1;
-    }
-    inline bool isTopology (const std::string& l) { return l == "pp" || l == "se"; }
     inline bool isFalsy (const std::string& l)
     {
         return l == "off" || l == "no" || l == "false" || l == "0" || l.empty();
     }
-
-    // Split a basename on the token separators (space/dash/underscore).
-    inline std::vector<std::string> tokens (const std::string& base)
-    {
-        std::vector<std::string> out;
-        std::string cur;
-        for (char ch : base)
-        {
-            if (ch == ' ' || ch == '-' || ch == '_')
-            {
-                if (! cur.empty()) { out.push_back (cur); cur.clear(); }
-            }
-            else cur += ch;
-        }
-        if (! cur.empty()) out.push_back (cur);
-        return out;
-    }
 } // namespace detail
 
 // One file going INTO the model: a stable id (path/basename — echoed back by selection), the
-// basename for the legacy fallback + display, and the metadata map (empty for legacy files).
+// basename for display only, and the metadata map that says what the file actually is.
 struct FileMeta
 {
     std::string id;
@@ -219,18 +196,25 @@ struct Device
     }
 };
 
-// Per-control default: noon-most gain, falsy boost, first value otherwise.
+// Per-control default: the gain dial's middle, falsy boost, first value otherwise. "Middle" is half
+// the declared `sweep` when the dial states one, else the midpoint of the captured degrees — the
+// generalization of the clock era's "noon", which only ever meant the same thing.
 inline std::string defaultValue (const Control& c)
 {
     if (c.values.empty()) return {};
     if (c.role == Role::Gain)
     {
+        int lo = 1 << 30, hi = -1;
+        for (const auto& v : c.values)
+            if (const int d = detail::degrees (v); d >= 0) { lo = std::min (lo, d); hi = std::max (hi, d); }
+        if (hi < 0) return c.values.front();               // not a degree dial — capture order decides
+        const int mid = c.sweep > 0 ? c.sweep / 2 : (lo + hi) / 2;
         std::string best = c.values.front();
         int bestD = 1 << 30;
         for (const auto& v : c.values)
-            if (const int h = detail::clockHours (v); h >= 0 && std::abs (h - 12) < bestD)
+            if (const int d = detail::degrees (v); d >= 0 && std::abs (d - mid) < bestD)
             {
-                bestD = std::abs (h - 12);
+                bestD = std::abs (d - mid);
                 best = v;
             }
         return best;
@@ -248,61 +232,18 @@ inline Settings defaultSettings (const Device& d)
     return s;
 }
 
-namespace detail
-{
-    // Legacy: synthesize settings from filename tokens; returns the family (leftover words).
-    inline std::string legacyParse (const std::string& base, Settings& s)
-    {
-        std::string family;
-        bool boostSeen = false;
-        for (const auto& tok : tokens (base))
-        {
-            const auto l = lower (tok);
-            if (isColour (l) || isChN (l)) s["channel"] = l;
-            else if (isClock (l))          s["gain"] = l;
-            else if (l == "boost")         { s["boost"] = "on"; boostSeen = true; }
-            else if (isTopology (l))       s["topology"] = tok;
-            else family += (family.empty() ? "" : " ") + tok;
-        }
-        if (! boostSeen) s["boost"] = "off";
-        return family.empty() ? base : family;
-    }
-
-    // True when EVERY token of the basename is a recognized control token (no leftover name word) —
-    // buildDevices then groups such files together instead of making each its own device.
-    inline bool legacyIsAllTokens (const std::string& base)
-    {
-        const auto ts = tokens (base);
-        if (ts.empty()) return false;
-        for (const auto& tok : ts)
-        {
-            const auto l = lower (tok);
-            if (! (isColour (l) || isChN (l) || isClock (l) || l == "boost" || isTopology (l)))
-                return false;
-        }
-        return true;
-    }
-
-    inline void addValue (std::vector<std::string>& values, const std::string& v)
-    {
-        if (std::find (values.begin(), values.end(), v) == values.end()) values.push_back (v);
-    }
-} // namespace detail
-
-// Build devices from a set of files. Grouping key: `rig_id` when stamped, else the family name
-// (metadata `gear_model`, else the filename leftovers). Meta-driven files take their control spec
-// verbatim (first spec seen wins); legacy files grow a channel/gain/boost/topology control per
-// dimension that shows ≥2 distinct values (single-valued dimensions stay invisible — OrbitCab's
-// rule), with gains sorted by the clock and boost normalized to off|on.
+// Build devices from a set of files. Grouping key: `rig_id` when stamped, else `gear_model`, else
+// the filename. Controls come from the file's `controls` spec VERBATIM (first spec seen wins) — a
+// filename is never parsed for them. A file without that key is simply its own device with no
+// knobs: no metadata, no device model. (The format shipped with a filename-token grammar —
+// colour/chN/NNh/boost/PP-SE — and it is gone. Settings in filenames means two sources of truth,
+// and the one you cannot fix later is the one already written on someone's disk.)
 inline std::vector<Device> buildDevices (const std::vector<FileMeta>& files)
 {
     struct Acc
     {
         Device d;
-        bool metaDriven = false;
         std::string gearModel;                             // to re-merge files that omit rig_id
-        std::vector<std::string> channels, gains, topos;   // legacy dimension unions, insertion order
-        bool anyBoostOn = false, anyBoostOff = false;
     };
     std::vector<Acc> accs;
 
@@ -341,34 +282,35 @@ inline std::vector<Device> buildDevices (const std::vector<FileMeta>& files)
             const auto family = ! gm.empty() ? gm : f.filenameBase;
             const auto rid = metaAt ("rig_id");
             auto& a = accFor (rid, gm, family);
-            a.metaDriven = true;
             if (a.d.rigId.empty() && ! rid.empty()) a.d.rigId = rid;   // a later id'd file names the group
             if (a.gearModel.empty()) a.gearModel = gm;
             if (a.d.slot.empty())
                 a.d.slot = ! metaAt ("slot").empty() ? metaAt ("slot") : metaAt ("gear_type");
-            if (a.d.controls.empty()) a.d.controls = parseControlsSpec (spec);
+            if (a.d.controls.empty())
+            {
+                a.d.controls = parseControlsSpec (spec);
+                // …and each dial's rotation from its own flat key, so a manifest-less folder still
+                // knows how far the knob turns (the spec string carries values, not the arc).
+                for (auto& c : a.d.controls)
+                    if (const auto it = f.meta.find ("sweep." + c.name); it != f.meta.end())
+                        if (const int deg = detail::degrees (it->second); deg > 0) c.sweep = deg;
+            }
             a.d.files.push_back ({ f.id, std::move (s) });
             continue;
         }
-        // legacy filename fallback. When the basename is ALL tokens (no leftover name), group them
-        // under one key so a nameless legacy pack still forms ONE device (else every combination
-        // splits into its own control-less device).
-        Settings s;
-        std::string family = detail::legacyParse (f.filenameBase, s);
-        std::string groupFamily = family;
-        if (family == f.filenameBase && detail::legacyIsAllTokens (f.filenameBase))
-            groupFamily = std::string();                              // token-only: shared empty key
-        auto& a = accFor (std::string(), std::string(), groupFamily);
-        detail::addValue (a.channels, s.count ("channel") ? s["channel"] : std::string());
-        detail::addValue (a.gains,    s.count ("gain") ? s["gain"] : std::string());
-        detail::addValue (a.topos,    s.count ("topology") ? s["topology"] : std::string());
-        (s["boost"] == "on" ? a.anyBoostOn : a.anyBoostOff) = true;
-        a.d.files.push_back ({ f.id, std::move (s) });
+        // No `controls` key: a foreign or unstamped file. It still PLAYS — it just has no knobs and
+        // no family to join. Grouped by gear_model when it has one, else standing alone under its
+        // own name; the name is a caption, never evidence.
+        const auto gm = metaAt ("gear_model");
+        auto& a = accFor (std::string(), gm, ! gm.empty() ? gm : f.filenameBase);
+        if (a.d.slot.empty())
+            a.d.slot = ! metaAt ("slot").empty() ? metaAt ("slot") : metaAt ("gear_type");
+        a.d.files.push_back ({ f.id, Settings {} });
     }
 
-    // The settings-trim keeps files matchable against the visible controls — needed for BOTH paths
-    // (meta files carry settings.* for controls the group may not expose; without trimming, find()
-    // and defaults miss and resolve() leaks stray keys).
+    // The settings-trim keeps files matchable against the visible controls: a file may carry
+    // settings.* for controls the group does not expose, and without trimming find() and the
+    // defaults miss while resolve() leaks stray keys.
     auto trimToControls = [] (Device& d) {
         for (auto& fe : d.files)
         {
@@ -382,17 +324,6 @@ inline std::vector<Device> buildDevices (const std::vector<FileMeta>& files)
     std::vector<Device> out;
     for (auto& a : accs)
     {
-        if (! a.metaDriven)
-        {
-            auto strip = [] (std::vector<std::string>& v) { v.erase (std::remove (v.begin(), v.end(), std::string()), v.end()); };
-            strip (a.channels); strip (a.gains); strip (a.topos);
-            std::sort (a.gains.begin(), a.gains.end(),
-                       [] (const std::string& x, const std::string& y) { return detail::clockHours (x) < detail::clockHours (y); });
-            if (a.channels.size() > 1) a.d.controls.push_back ({ "channel", Role::Channel, a.channels });
-            if (a.topos.size() > 1)    a.d.controls.push_back ({ "topology", Role::Topology, a.topos });
-            if (a.anyBoostOn && a.anyBoostOff) a.d.controls.push_back ({ "boost", Role::Boost, { "off", "on" } });
-            if (a.gains.size() > 1)    a.d.controls.push_back ({ "gain", Role::Gain, a.gains });
-        }
         trimToControls (a.d);
         out.push_back (std::move (a.d));
     }
@@ -475,13 +406,151 @@ struct EqHints
     bool showCurve = true;                           // draw the EQ curve
 };
 
+// ---------------------------------------------------------------------------------------------
+// MEASURED controls — a linear knob the capture tool did NOT turn into a model axis.
+//
+// A tone control sitting after the clipper is linear: sweeping it changes the frequency response,
+// not the distortion. Capturing it as a matrix axis would multiply the take count for nothing, so
+// the capture tool measures it instead (a short sweep per position, deconvolved against the
+// reference position) and the pack ships the recovered response. The player applies it as DSP and
+// gets a CONTINUOUS knob out of a handful of measured points.
+//
+// Format invariant: every file of the stage was captured with this control AT `reference`, and the
+// responses are relative to it. So the reference position is flat by construction — a player that
+// ignores `measured` (or a single .namz pulled out of the pack) plays the reference tone, which is
+// exactly what its weights encode. No lie, no double-filtering.
+// ---------------------------------------------------------------------------------------------
+
+struct MeasuredPosition
+{
+    std::string value;           // the dial position, degrees ("0" … "300")
+    double norm       = 0.0;     // 0..1 across the sweep — a player's knob maps straight onto this
+    std::vector<double> db;      // the measured response against the reference, dB per grid point
+};
+
+// The log-spaced frequency grid `MeasuredPosition::db` is sampled on. points == 0 → the control is
+// unusable and a reader must skip it: the curve IS the description, there is nothing else to fall
+// back to. Earlier drafts shipped a fitted 1-pole corner beside it (`lp1_hz` + `gain_db`) and a
+// residual to say how far the fit lay from the truth. That was withdrawn after measuring real pedals:
+// a Big Muff tone control is a bass-cut/treble-boost blend, a 30 dB tilt across the band, and the
+// best 1-pole fit missed it by 15-65 dB. A number that wrong is worse than no number, because a
+// player written against it produces confident nonsense. The curve costs a few hundred bytes.
+struct MeasuredGrid
+{
+    double fLo = 20.0, fHi = 20000.0;
+    int points = 0;
+};
+
+// Where the shipped curve was shown to be a FILTER. Each position is swept at several drive levels;
+// a filter comes back the same at all of them, a distortion product does not. Outside this band the
+// measurement did not reproduce, so a player must hold the curve at the nearest trusted value rather
+// than apply it — on a Big Muff tone control the curve is solid to 9 kHz and disagrees by 4-8 dB by
+// 12 kHz, which is hiss and harmonics, not a tone stack.
+//
+// `levels` == 1 means the control was swept at one level only: nothing was tested, the band spans the
+// whole grid, and that is an honest absence of evidence rather than a claim.
+//
+// `span_db` is what the band is a claim ABOUT: the drive range over which the curve held. Verified over
+// 24 dB means a signal swinging 24 dB under the capture level stays inside the promise; a fuzz driven
+// 40 dB down goes clean and its bass stops matching, which is the pedal being honest rather than the
+// measurement failing. A reader that cares about very quiet playing should treat the band as untested
+// there, not as guaranteed.
+struct MeasuredTrust
+{
+    double loHz = 0.0, hiHz = 0.0;            // 0/0 = not stated: trust the whole grid
+    double spanDb = 0.0;                      // the DRIVE RANGE it was verified over, dB below full
+    int levels = 0;
+};
+
+struct Measured
+{
+    std::string name;                         // the knob, e.g. "tone"
+    int sweep = 0;                            // dial rotation, degrees
+    std::string placement = "post";           // where the filter goes; unknown value → player SKIPS it
+    std::string reference;                    // the position every file of the stage was captured at
+    Settings operatingPoint;                  // capture axes held while sweeping (provenance)
+    MeasuredGrid grid;
+    MeasuredTrust trusted;
+    std::vector<MeasuredPosition> positions;  // dial order
+};
+
+// ---------------------------------------------------------------------------------------------
+// `blend` — a dry/wet mix knob, the third kind of control and neither of the other two.
+//
+// A blend is not a filter, so it cannot be `measured`; and it must not be a captured axis, because
+// capturing it would multiply the take count to ship something the player already has for free. The dry
+// signal IS the DI the model is being fed. Eleven blend positions as an axis would be eleven copies of
+// one model plus arithmetic.
+//
+// So the pack describes the mix instead:
+//
+//     out = polarity · dry_gain(pos) · (DI * dry) + wet_gain(pos) · model(DI)
+//
+// `dry` is the dry path's own response, measured — on a bass pedal it is almost never flat, because the
+// whole point of the circuit is to keep a clean low end out of the distortion. It is measured with the
+// knob at `dry_end`, where the output is the dry path ALONE and therefore linear; that measurement is
+// exact, and it is why a blend can be described from outside the box at all.
+//
+// `polarity` is the sign of the dry path against the wet one. It matters more than it looks: two paths
+// summed out of phase gut the middle of the knob's travel, and a player that assumed + would render the
+// centre position hollow. -1 says the box inverts one of them.
+//
+// `law` names how the two gains were derived (`linear`, `equal_power`, or anything else) — provenance
+// only, never something a reader must implement, because the gains themselves are shipped per position.
+// A pot with a peculiar taper is expressible by simply carrying its numbers.
+//
+// Invariant, the same one `measured` has: every model of the stage was captured with the blend at
+// `reference` — the full-WET end. So a player that ignores `blend`, or a lone .namz pulled out of the
+// pack, plays full wet, which is exactly what those weights encode. Nothing is double-mixed.
+struct BlendPosition
+{
+    std::string value;           // the knob position
+    double norm   = 0.0;         // 0..1 across the sweep
+    double dryDb  = 0.0;         // the dry path's gain here, dB (-120 = silent)
+    double wetDb  = 0.0;         // the model's gain here, dB
+};
+
+struct Blend
+{
+    std::string name;                         // the knob, e.g. "blend"
+    int sweep = 0;                            // dial rotation, degrees; 0 = a switch
+    std::string reference;                     // where the models were captured: the full-wet end
+    std::string dryEnd;                        // where the dry curve was measured: the full-dry end
+    std::string law = "linear";                // how the gains below were derived (provenance)
+    int polarity = 1;                          // +1, or -1 if the box inverts the dry path
+    Settings operatingPoint;                   // capture axes held while sweeping (provenance)
+    MeasuredGrid grid;
+    MeasuredTrust trusted;                     // where `dry` is a filter — same rules as `measured`
+    std::vector<double> dryDb;                 // the dry path's response, dB per grid point
+    std::vector<BlendPosition> positions;      // knob order
+};
+
 struct Stage
 {
     StageKind kind = StageKind::Unknown;
-    std::string rawKind;                            // the original string (preserved for unknown kinds)
+    std::string rawKind;                          // the original string (preserved for unknown kinds)
     std::string slot;                               // pedal | preamp | amp | poweramp | rig
     std::string make, model, gearType;              // gear caption
+    // What this device sounds like AT ITS DEFAULT POSITION (mid-sweep gain — the combination a
+    // player loads), on the ordered scale `clean < edge < crunch < hi-gain`. One honest label rather
+    // than a range: both ends of a range are eyeballed anyway, and a range invites a player to fake
+    // a per-position character it was never given. Per-FILE nuance stays available as the
+    // conventional `tone_type` header key. The scale measures gain AMOUNT only — voicing/era words
+    // belong to a separate dimension, never mixed in, or the ordering it exists for stops working.
+    std::string toneType;
+    // What KIND of dirt, independent of how much: `od` | `dist` | `fuzz` (empty = unstated, which is
+    // the honest answer for a clean preamp). A second axis rather than more `tone_type` values: a
+    // fuzz and a metal distortion sit at the same gain amount and sound nothing alike, so folding
+    // them into one ordered scale would destroy the ordering AND lose the distinction.
+    std::string voicing;
+    // What is IN the captured signal path: `type:count` in signal order — "tube:4", "ic:1,diode:2",
+    // "tube:1,bjt:1". Documentation a player renders as a glyph row, not something the DSP reads.
+    // Per FILE the same string ships under the header's long-standing `device` key; here it is named
+    // `circuit` because a stage's `device` is already its selectable matrix.
+    std::string circuit;
     Device device;                                  // Nam: controls + files (the selectable matrix)
+    std::vector<Measured> measured;                 // Nam: linear knobs shipped as DSP, not as axes
+    std::vector<Blend> blend;                       // Nam: dry/wet mix knobs — the player mixes, see above
     std::vector<std::string> irFiles;               // Ir: cabinet impulse file names
     EqHints eq;                                     // Eq: the guidance above
 };
@@ -489,6 +558,11 @@ struct Stage
 struct Rig
 {
     std::string rigId, name, modeledBy;
+    // The physical box several packs came from. A three-channel head ships as three packs — each its
+    // own device, with its own rig_id — and this is the only thing that says they are siblings. It
+    // GROUPS in a list and does nothing else: sharing a rig_id would merge them back into one device
+    // with one matrix, which is exactly the pretence splitting them was meant to end.
+    std::string familyId;
     std::vector<Stage> chain;                        // signal order
 
     // First stage the player can actually run (kind != Unknown), or nullptr.

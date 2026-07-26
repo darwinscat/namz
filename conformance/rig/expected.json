@@ -7,21 +7,22 @@
   "stage": {
     "slot": "preamp",
     "gear": { "make": "Darwin's Cat", "model": "Golden Amp", "type": "preamp" },
-    "controls": "channel:channel=green|red; gain:gain=07h|12h|17h",
+    "controls": "channel:channel=green|red; gain:gain=0|150|300",
+    "sweep": { "gain": 300 },
     "files": {
-      "Golden-green-07h.namz": { "channel": "green", "gain": "07h" },
-      "Golden-green-12h.namz": { "channel": "green", "gain": "12h" },
-      "Golden-red-07h.namz":   { "channel": "red",   "gain": "07h" }
+      "m01.namz": { "channel": "red",   "gain": "0" },
+      "m02.namz": { "channel": "green", "gain": "150" },
+      "m03.namz": { "channel": "green", "gain": "0" }
     }
   },
   "selection": [
-    { "from": "Golden-green-07h.namz", "turn": ["gain", "12h"],    "expect": "Golden-green-12h.namz",
+    { "from": "m03.namz", "turn": ["gain", "150"],    "expect": "m02.namz",
       "why": "exact captured combination" },
-    { "from": "Golden-green-12h.namz", "turn": ["channel", "red"], "expect": "Golden-red-07h.namz",
-      "why": "red was only captured at 07h — the pinned channel wins, gain falls back" },
-    { "from": "Golden-red-07h.namz",   "turn": ["gain", "12h"],    "expect": "Golden-green-12h.namz",
-      "why": "12h was only captured on green — the pinned gain wins, channel flips" },
-    { "from": "Golden-green-07h.namz", "turn": ["gain", "17h"],    "expect": null,
-      "why": "17h is declared on the dial but NO file carries it — never a contradicting file" }
+    { "from": "m02.namz", "turn": ["channel", "red"], "expect": "m01.namz",
+      "why": "red was only captured at 0° — the pinned channel wins, gain falls back" },
+    { "from": "m01.namz", "turn": ["gain", "150"],    "expect": "m02.namz",
+      "why": "150° was only captured on green — the pinned gain wins, channel flips" },
+    { "from": "m03.namz", "turn": ["gain", "300"],    "expect": null,
+      "why": "300° is declared on the dial but NO file carries it — never a contradicting file" }
   ]
 }

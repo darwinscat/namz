@@ -57,10 +57,24 @@ inline std::map<std::string, std::string> stampMeta (const Rig& rig, const Stage
     const auto rid = ! stage.device.rigId.empty() ? stage.device.rigId : rig.rigId;
     if (! rid.empty())            m["rig_id"]     = rid;
 
+    // Stage-level facts every file of the stage shares. They are stamped per file so a single .namz
+    // pulled out of the pack still says what it is — the same reason its settings and controls are
+    // here. `circuit` ships under the header's long-standing `device` key, which players already read.
+    if (! rig.familyId.empty())   m["family_id"]  = rig.familyId;
+    if (! stage.toneType.empty()) m["tone_type"]  = stage.toneType;
+    if (! stage.voicing.empty())  m["voicing"]    = stage.voicing;
+    if (! stage.circuit.empty())  m["device"]     = stage.circuit;
+
     if (const auto spec = buildControlsSpec (stage.device.controls); ! spec.empty())
         m["controls"] = spec;
     for (const auto& [k, v] : fileSettings)
         m["settings." + k] = v;
+
+    // How far each DIAL turns, in degrees — its `values` are positions on that arc, so a player can
+    // place the knob without knowing the device. Flat per-control key like settings.*: additive, a
+    // reader that ignores it still selects correctly.
+    for (const auto& c : stage.device.controls)
+        if (c.sweep > 0) m["sweep." + c.name] = std::to_string (c.sweep);
 
     for (const auto& c : stage.device.controls)
         if (c.role == Role::Boost)
@@ -83,6 +97,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
     j["format"] = "orbitrig";
     j["schema"] = 1;
     if (! rig.rigId.empty())     j["rig_id"]     = rig.rigId;
+    if (! rig.familyId.empty())  j["family_id"]  = rig.familyId;
     if (! rig.name.empty())      j["name"]       = rig.name;
     if (! rig.modeledBy.empty()) j["modeled_by"] = rig.modeledBy;
 
@@ -103,6 +118,9 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             if (! st.gearType.empty()) g["type"]  = st.gearType;
             sj["gear"] = std::move (g);
         }
+        if (! st.toneType.empty()) sj["tone_type"] = st.toneType;
+        if (! st.voicing.empty())  sj["voicing"]   = st.voicing;
+        if (! st.circuit.empty())  sj["circuit"]   = st.circuit;
 
         if (st.kind == StageKind::Nam)
         {
@@ -112,6 +130,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 nlohmann::json cj;
                 cj["name"]   = c.name;
                 cj["role"]   = roleToString (c.role);
+                if (c.sweep > 0) cj["sweep"] = c.sweep;
                 cj["values"] = c.values;
                 controls.push_back (std::move (cj));
             }
@@ -128,6 +147,107 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 files.push_back (std::move (fj));
             }
             if (! files.empty()) sj["files"] = std::move (files);
+
+            // The measured (linear) knobs — see namz_rig.h. Client-ready first: `norm` + a fit in
+            // PHYSICAL units (Hz / dB), which survives any sample rate, with the raw `db` curve as
+            // optional provenance a player may upgrade to later.
+            auto measured = nlohmann::json::array();
+            for (const auto& me : st.measured)
+            {
+                if (me.name.empty() || me.positions.empty()) continue;
+                nlohmann::json mj;
+                mj["name"] = me.name;
+                if (me.sweep > 0)            mj["sweep"]     = me.sweep;
+                if (! me.placement.empty())  mj["placement"] = me.placement;
+                if (! me.reference.empty())  mj["reference"] = me.reference;
+                if (! me.operatingPoint.empty())
+                {
+                    nlohmann::json op = nlohmann::json::object();
+                    for (const auto& [k, v] : me.operatingPoint) op[k] = v;
+                    mj["operating_point"] = std::move (op);
+                }
+                // The grid and the curves travel together or not at all: a curve without the grid it
+                // was sampled on cannot be applied to anything.
+                if (me.grid.points > 0)
+                {
+                    nlohmann::json g;
+                    g["f_lo"]   = me.grid.fLo;
+                    g["f_hi"]   = me.grid.fHi;
+                    g["points"] = me.grid.points;
+                    mj["grid"] = std::move (g);
+                }
+                if (me.trusted.hiHz > me.trusted.loHz)
+                {
+                    nlohmann::json t;
+                    t["lo_hz"]   = me.trusted.loHz;
+                    t["hi_hz"]   = me.trusted.hiHz;
+                    t["span_db"] = me.trusted.spanDb;
+                    t["levels"]  = me.trusted.levels;
+                    mj["trusted"] = std::move (t);
+                }
+                auto positions = nlohmann::json::array();
+                for (const auto& p : me.positions)
+                {
+                    nlohmann::json pj;
+                    pj["value"] = p.value;
+                    pj["norm"]  = p.norm;
+                    pj["db"]    = p.db;
+                    positions.push_back (std::move (pj));
+                }
+                mj["positions"] = std::move (positions);
+                measured.push_back (std::move (mj));
+            }
+            if (! measured.empty()) sj["measured"] = std::move (measured);
+
+            auto blends = nlohmann::json::array();
+            for (const auto& bl : st.blend)
+            {
+                if (bl.name.empty()) continue;
+                nlohmann::json bj;
+                bj["name"] = bl.name;
+                if (bl.sweep > 0)             bj["sweep"]     = bl.sweep;
+                if (! bl.reference.empty())   bj["reference"] = bl.reference;
+                if (! bl.dryEnd.empty())      bj["dry_end"]   = bl.dryEnd;
+                if (! bl.law.empty())         bj["law"]       = bl.law;
+                bj["polarity"] = bl.polarity;
+                if (! bl.operatingPoint.empty())
+                {
+                    nlohmann::json op = nlohmann::json::object();
+                    for (const auto& [k, v] : bl.operatingPoint) op[k] = v;
+                    bj["operating_point"] = std::move (op);
+                }
+                if (bl.grid.points > 0)
+                {
+                    nlohmann::json g;
+                    g["f_lo"]   = bl.grid.fLo;
+                    g["f_hi"]   = bl.grid.fHi;
+                    g["points"] = bl.grid.points;
+                    bj["grid"] = std::move (g);
+                }
+                if (bl.trusted.hiHz > bl.trusted.loHz)
+                {
+                    nlohmann::json t;
+                    t["lo_hz"]   = bl.trusted.loHz;
+                    t["hi_hz"]   = bl.trusted.hiHz;
+                    t["span_db"] = bl.trusted.spanDb;
+                    t["levels"]  = bl.trusted.levels;
+                    bj["trusted"] = std::move (t);
+                }
+                bj["dry"] = bl.dryDb;
+                auto bp = nlohmann::json::array();
+                for (const auto& p : bl.positions)
+                {
+                    nlohmann::json pj;
+                    pj["value"]   = p.value;
+                    pj["norm"]    = p.norm;
+                    pj["dry_db"]  = p.dryDb;
+                    pj["wet_db"]  = p.wetDb;
+                    bp.push_back (std::move (pj));
+                }
+                bj["positions"] = std::move (bp);
+                blends.push_back (std::move (bj));
+            }
+            if (! blends.empty()) sj["blend"] = std::move (blends);
         }
         else if (st.kind == StageKind::Ir)
         {

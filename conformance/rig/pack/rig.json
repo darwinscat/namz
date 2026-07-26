@@ -13,33 +13,34 @@
         {
           "name": "gain",
           "role": "gain",
+          "sweep": 300,
           "values": [
-            "07h",
-            "12h",
-            "17h"
+            "0",
+            "150",
+            "300"
           ]
         }
       ],
       "files": [
         {
-          "file": "Golden-green-07h.namz",
-          "settings": {
-            "channel": "green",
-            "gain": "07h"
-          }
-        },
-        {
-          "file": "Golden-green-12h.namz",
-          "settings": {
-            "channel": "green",
-            "gain": "12h"
-          }
-        },
-        {
-          "file": "Golden-red-07h.namz",
+          "file": "m01.namz",
           "settings": {
             "channel": "red",
-            "gain": "07h"
+            "gain": "0"
+          }
+        },
+        {
+          "file": "m02.namz",
+          "settings": {
+            "channel": "green",
+            "gain": "150"
+          }
+        },
+        {
+          "file": "m03.namz",
+          "settings": {
+            "channel": "green",
+            "gain": "0"
           }
         }
       ],
