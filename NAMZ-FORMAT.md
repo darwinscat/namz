@@ -217,7 +217,7 @@ weights encode. Nothing is double-filtered and nothing lies.
 | `reference` | the position every file was captured at (curves are relative to it) |
 | `operating_point` | the capture axes held while sweeping — provenance, and the honest limit of the measurement |
 | `grid` | the log-spaced frequency grid `db` is sampled on: `f_lo`, `f_hi`, `points` |
-| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels`. Outside the band, hold the curve at the nearest trusted value — do not apply it. Absent, or `levels` 1: nothing was tested, trust the whole grid |
+| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels`. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at |
 | `positions[]` | per measured position, in dial order |
 
 Each position carries the **measurement itself**, and nothing else:
@@ -280,7 +280,7 @@ out = polarity · dry_gain(pos) · (DI * dry) + wet_gain(pos) · model(DI)
     "law": "linear", "polarity": -1,
     "grid": { "f_lo": 20.0, "f_hi": 20000.0, "points": 4 },
     "trusted": { "lo_hz": 40.0, "hi_hz": 12000.0, "span_db": 24.0, "levels": 5 },
-    "dry": [0.0, -1.0, -9.0, -24.0],
+    "dry": [0.0, -1.0, -9.0, -24.0], "dry_level_db": -9.0,
     "positions": [
       { "value": "0",   "norm": 0.0, "dry_db": 0.0,    "wet_db": -120.0 },
       { "value": "150", "norm": 0.5, "dry_db": -6.0,   "wet_db": -6.0 },
@@ -294,7 +294,8 @@ out = polarity · dry_gain(pos) · (DI * dry) + wet_gain(pos) · model(DI)
 | `name` / `sweep` | the knob and its rotation; `sweep` absent or 0 means a switch |
 | `reference` | the full-WET end — where every model of the stage was captured. Same invariant as `measured`: ignore `blend` and you play full wet, which is exactly what the weights encode |
 | `dry_end` | the full-DRY end, where `dry` was measured. At that position the output is the dry path ALONE and therefore linear, which is the whole reason a blend can be characterised from outside the box |
-| `dry[]` | the dry path's own response, dB per `grid` point. On a bass pedal this is almost never flat — keeping a clean low end out of the distortion is what the circuit is for |
+| `dry[]` | the dry path's response SHAPE, dB per `grid` point, with its own broadband level removed. On a bass pedal this is almost never flat — keeping a clean low end out of the distortion is what the circuit is for |
+| `dry_level_db` | the level that was removed: the dry path's broadband gain, dB, on the same scale as the model's own output. REQUIRED, and not derivable from anything else in the pack — a reader cannot re-measure it, because the pedal is not in their hands. Omit it and a dry path with 9 dB of insertion loss renders 9 dB too loud at every position that is not an end |
 | `trusted` | as in `measured`: where `dry` was shown to be a filter, over what drive range |
 | `polarity` | `+1`, or `-1` if the box inverts one path against the other. Not cosmetic: two paths summed out of phase gut the middle of the knob's travel, and a player that assumed `+1` would render the centre hollow |
 | `law` | how the gains were derived (`linear`, `equal_power`, …) — PROVENANCE only. Never something a reader must implement, because the gains are shipped per position, which is also how a pot with a peculiar taper stays expressible |

@@ -101,7 +101,7 @@ int main()
     // --- resolve() contract hardening (crew) -----------------------------------------------------
     {
         Device d;
-        d.controls = { { "gain", Role::Gain, {"0","150","300"}, 300 } };
+        d.controls = { { "gain", Role::Gain, {"0","150","300"}, {}, 300 } };
         d.files = { {"a", {{"gain","0"}}}, {"b", {{"gain","150"}}} };   // 300 NOT captured
 
         // CONTRACT: turning gain to an UNCAPTURED value must NOT return a file that contradicts the
@@ -318,7 +318,7 @@ int main()
              "blend":[{"name":"blend","sweep":300,"reference":"300","dry_end":"0",
                        "law":"linear","polarity":-1,
                        "grid":{"f_lo":20,"f_hi":20000,"points":4},
-                       "dry":[0.0,-1.0,-9.0,-24.0],
+                       "dry":[0.0,-1.0,-9.0,-24.0],"dry_level_db":-9.0,
                        "positions":[{"value":"0","norm":0.0,"dry_db":0.0,"wet_db":-120.0},
                                     {"value":"150","norm":0.5,"dry_db":-6.0,"wet_db":-6.0},
                                     {"value":"300","norm":1.0,"dry_db":-120.0,"wet_db":0.0}]}],
@@ -351,6 +351,8 @@ int main()
             ok (bl.law == "linear", "the law rides along as provenance, never as something to implement");
             ok (bl.dryDb.size() == 4 && bl.dryDb[3] == -24.0,
                 "the dry path's own response is carried: on a bass pedal it is never flat");
+            ok (bl.dryLevelDb == -9.0,
+                "…and its broadband LEVEL, which no reader could ever re-measure");
             ok (bl.positions.size() == 3 && bl.positions[1].dryDb == -6.0 && bl.positions[1].wetDb == -6.0,
                 "…and the two gains are shipped per position, so a peculiar pot taper is expressible");
             ok (bl.positions[0].wetDb == -120.0 && bl.positions[2].dryDb == -120.0,
@@ -390,9 +392,9 @@ int main()
         tone.name = "tone"; tone.sweep = 300; tone.reference = "300";
         tone.operatingPoint = { { "gain", "150" } };
         tone.grid.points = 3;
-        tone.trusted = { 40.0, 9000.0, 24.0, 8 };
-        tone.positions = { { "0",   0.0, { 0.0, -6.0, -18.0 } },
-                           { "300", 1.0, { 0.0,  0.0,   0.0 } } };
+        tone.trusted = { 40.0, 9000.0, 0, 0, 24.0, 8 };
+        tone.positions = { { "0",   {}, 0.0, 0.0, { 0.0, -6.0, -18.0 } },
+                           { "300", {}, 1.0, 0.0, { 0.0,  0.0,   0.0 } } };
         nam.measured = { tone };
 
         Blend mix;                                                    // the third kind of control
@@ -400,7 +402,8 @@ int main()
         mix.law = "equal_power"; mix.polarity = -1;
         mix.grid.points = 3;
         mix.dryDb = { 0.0, -2.0, -12.0 };
-        mix.positions = { { "0", 0.0, 0.0, -120.0 }, { "300", 1.0, -120.0, 0.0 } };
+        mix.dryLevelDb = -4.5;
+        mix.positions = { { "0", {}, 0.0, 0.0, -120.0 }, { "300", {}, 1.0, -120.0, 0.0 } };
         nam.blend = { mix };
 
         Stage eq;
@@ -445,6 +448,7 @@ int main()
                 "the measured curve round-trips, grid and trusted band and all");
             ok (n.blend.size() == 1 && n.blend[0].polarity == -1 && n.blend[0].law == "equal_power"
                 && n.blend[0].dryEnd == "0" && n.blend[0].dryDb == std::vector<double> { 0.0, -2.0, -12.0 }
+                && n.blend[0].dryLevelDb == -4.5
                 && n.blend[0].positions.size() == 2 && n.blend[0].positions[1].wetDb == 0.0,
                 "the blend block round-trips: polarity, law, dry curve and both gains");
             const auto& e = back.chain[1];

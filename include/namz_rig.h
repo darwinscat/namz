@@ -63,6 +63,10 @@ struct Control
     std::string name;
     Role role = Role::Generic;
     std::vector<std::string> values;   // capture/dial order
+    // Optional display names, parallel to `values` ("Clean" over "green"). Empty, or shorter than
+    // `values`, means show the value itself. This is the one thing about a device a player provably
+    // cannot derive — the token is the pack's identity, the label is what a human calls it.
+    std::vector<std::string> labels;
     int sweep = 0;                     // dial rotation, degrees; 0 = not a dial (switch/selector)
 };
 
@@ -424,7 +428,9 @@ struct EqHints
 struct MeasuredPosition
 {
     std::string value;           // the dial position, degrees ("0" … "300")
-    double norm       = 0.0;     // 0..1 across the sweep — a player's knob maps straight onto this
+    std::string label;           // optional display name ("Scooped") — the producer knows it, a reader cannot
+    double norm       = 0.0;     // 0..1 across the sweep, ASCENDING across positions[]
+    double levelDb    = 0.0;     // the curve's broadband level over the trusted band, dB
     std::vector<double> db;      // the measured response against the reference, dB per grid point
 };
 
@@ -457,9 +463,21 @@ struct MeasuredGrid
 // there, not as guaranteed.
 struct MeasuredTrust
 {
-    double loHz = 0.0, hiHz = 0.0;            // 0/0 = not stated: trust the whole grid
-    double spanDb = 0.0;                      // the DRIVE RANGE it was verified over, dB below full
-    int levels = 0;
+    // loHz == hiHz == 0 with levels == 0: not stated — nothing was tested, trust the whole grid.
+    // hiHz <= loHz with levels >= 2: TESTED AND FAILED EVERYWHERE. The curves disagreed at every
+    // frequency, so the control is not a filter in any band and its curve must NOT be applied. These
+    // two cases used to encode identically, because the writer only emitted the block when the band
+    // was non-empty — so the least reproducible measurement shipped as the most trusted one.
+    double loHz = 0.0, hiHz = 0.0;
+    // …and the SAME band as grid indices. The hold rule is applied on the grid, so a player must map Hz
+    // to an index; two players rounding differently pick neighbouring points, and on a 30 dB tilt
+    // adjacent 1/12-octave points are decibels apart. The producer knows the grid exactly, so it says
+    // which points it meant. loIndex > hiIndex carries the same "failed everywhere" meaning as the Hz.
+    int loIndex = 0, hiIndex = 0;
+    double spanDb = 0.0;                      // the drive range ACTUALLY swept, dB between the loudest
+                                              // and quietest weighed rung — not a producer's constant
+    int levels = 0;                           // the FEWEST levels any position was weighed at: a claim
+                                              // is only as strong as its weakest position
 };
 
 struct Measured
@@ -469,9 +487,14 @@ struct Measured
     std::string placement = "post";           // where the filter goes; unknown value → player SKIPS it
     std::string reference;                    // the position every file of the stage was captured at
     Settings operatingPoint;                  // capture axes held while sweeping (provenance)
+    std::string defaultValue;                 // where a player starts the knob; the reference is usually
+                                              // an END of travel, so it is the wrong thing to reach for
     MeasuredGrid grid;
     MeasuredTrust trusted;
-    std::vector<MeasuredPosition> positions;  // dial order
+    // ASCENDING by `norm`. Sorted by the producer so a player can index and lerp with no search, no
+    // sort and no defence: a declared order like "300,240,…,0" is a normal way to write a knob that
+    // reads 10 to 0, and it used to ship descending norms straight into readers that assume otherwise.
+    std::vector<MeasuredPosition> positions;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -505,7 +528,12 @@ struct Measured
 struct BlendPosition
 {
     std::string value;           // the knob position
-    double norm   = 0.0;         // 0..1 across the sweep
+    std::string label;           // optional display name
+    // 0..1 across the sweep — ROTATION, exactly as in MeasuredPosition, ascending across positions[].
+    // It used to be the mix fraction here and rotation there: one field name, one pack, two meanings.
+    // Which end is wet is said by `reference`, which end is dry by `dry_end`; norm says where the knob
+    // points, and nothing else.
+    double norm   = 0.0;
     double dryDb  = 0.0;         // the dry path's gain here, dB (-120 = silent)
     double wetDb  = 0.0;         // the model's gain here, dB
 };
@@ -518,10 +546,17 @@ struct Blend
     std::string dryEnd;                        // where the dry curve was measured: the full-dry end
     std::string law = "linear";                // how the gains below were derived (provenance)
     int polarity = 1;                          // +1, or -1 if the box inverts the dry path
+    std::string defaultValue;                  // where a player starts the knob
     Settings operatingPoint;                   // capture axes held while sweeping (provenance)
     MeasuredGrid grid;
     MeasuredTrust trusted;                     // where `dry` is a filter — same rules as `measured`
-    std::vector<double> dryDb;                 // the dry path's response, dB per grid point
+    // The dry path's response: SHAPE in `dryDb` (its own broadband level removed) and that level in
+    // `dryLevelDb`. Both are needed and neither can be recovered from the other. Without the level a
+    // player cannot know how loud the dry path is against the model, and no reader can re-measure it —
+    // the pedal is not in their hands. An earlier draft shipped the shape alone; a dry path with 9 dB
+    // of insertion loss then rendered 9 dB too hot at every intermediate position.
+    std::vector<double> dryDb;                 // dB per grid point, mean-removed
+    double dryLevelDb = 0.0;                   // that removed mean, dB — the dry path's broadband gain
     std::vector<BlendPosition> positions;      // knob order
 };
 

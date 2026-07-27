@@ -107,6 +107,9 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (vv.is_string())            ctl.values.push_back (vv.get<std::string>());
                             else if (! vv.is_structured()) ctl.values.push_back (vv.dump());
                         }
+                    if (auto l = cj.find ("labels"); l != cj.end() && l->is_array())
+                        for (const auto& lv : *l)
+                            if (lv.is_string()) ctl.labels.push_back (lv.get<std::string>());
                     ctl.sweep = detail::jint (cj, "sweep");   // dial rotation; absent → not a dial
                     if (! ctl.name.empty() && ! ctl.values.empty()) st.device.controls.push_back (std::move (ctl));
                 }
@@ -138,7 +141,8 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     me.name      = detail::jstr (mj, "name");
                     me.sweep     = detail::jint (mj, "sweep");
                     me.placement = detail::jstr (mj, "placement", "post");
-                    me.reference = detail::jstr (mj, "reference");
+                    me.reference    = detail::jstr (mj, "reference");
+                    me.defaultValue = detail::jstr (mj, "default");
                     if (auto op = mj.find ("operating_point"); op != mj.end() && op->is_object())
                         for (auto it = op->begin(); it != op->end(); ++it)
                         {
@@ -147,8 +151,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         }
                     if (auto t = mj.find ("trusted"); t != mj.end() && t->is_object())
                     {
-                        me.trusted.loHz   = detail::jnum (*t, "lo_hz");
-                        me.trusted.hiHz   = detail::jnum (*t, "hi_hz");
+                        me.trusted.loHz    = detail::jnum (*t, "lo_hz");
+                        me.trusted.hiHz    = detail::jnum (*t, "hi_hz");
+                        me.trusted.loIndex = detail::jint (*t, "lo_index");
+                        me.trusted.hiIndex = detail::jint (*t, "hi_index");
                         me.trusted.spanDb = detail::jnum (*t, "span_db");
                         me.trusted.levels = detail::jint (*t, "levels");
                     }
@@ -164,7 +170,9 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (! pj.is_object()) continue;
                             MeasuredPosition p;
                             p.value      = detail::jstr (pj, "value");
+                            p.label      = detail::jstr (pj, "label");
                             p.norm       = detail::jnum (pj, "norm");
+                            p.levelDb    = detail::jnum (pj, "level_db");
                             if (auto db = pj.find ("db"); db != pj.end() && db->is_array())
                                 for (const auto& v : *db)
                                     if (v.is_number()) p.db.push_back (v.get<double>());
@@ -183,7 +191,8 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     bl.name      = detail::jstr (bj, "name");
                     bl.sweep     = detail::jint (bj, "sweep");
                     bl.reference = detail::jstr (bj, "reference");
-                    bl.dryEnd    = detail::jstr (bj, "dry_end");
+                    bl.dryEnd       = detail::jstr (bj, "dry_end");
+                    bl.defaultValue = detail::jstr (bj, "default");
                     bl.law       = detail::jstr (bj, "law", "linear");
                     bl.polarity  = detail::jint (bj, "polarity", 1) < 0 ? -1 : 1;
                     if (auto op = bj.find ("operating_point"); op != bj.end() && op->is_object())
@@ -194,8 +203,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         }
                     if (auto t = bj.find ("trusted"); t != bj.end() && t->is_object())
                     {
-                        bl.trusted.loHz   = detail::jnum (*t, "lo_hz");
-                        bl.trusted.hiHz   = detail::jnum (*t, "hi_hz");
+                        bl.trusted.loHz    = detail::jnum (*t, "lo_hz");
+                        bl.trusted.hiHz    = detail::jnum (*t, "hi_hz");
+                        bl.trusted.loIndex = detail::jint (*t, "lo_index");
+                        bl.trusted.hiIndex = detail::jint (*t, "hi_index");
                         bl.trusted.spanDb = detail::jnum (*t, "span_db");
                         bl.trusted.levels = detail::jint (*t, "levels");
                     }
@@ -205,6 +216,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         bl.grid.fHi    = detail::jnum (*g, "f_hi", 20000.0);
                         bl.grid.points = detail::jint (*g, "points");
                     }
+                    bl.dryLevelDb = detail::jnum (bj, "dry_level_db");
                     if (auto d = bj.find ("dry"); d != bj.end() && d->is_array())
                         for (const auto& v : *d)
                             if (v.is_number()) bl.dryDb.push_back (v.get<double>());
@@ -214,6 +226,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (! pj.is_object()) continue;
                             BlendPosition p;
                             p.value = detail::jstr (pj, "value");
+                            p.label = detail::jstr (pj, "label");
                             p.norm  = detail::jnum (pj, "norm");
                             p.dryDb = detail::jnum (pj, "dry_db", -120.0);
                             p.wetDb = detail::jnum (pj, "wet_db");

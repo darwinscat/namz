@@ -132,6 +132,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 cj["role"]   = roleToString (c.role);
                 if (c.sweep > 0) cj["sweep"] = c.sweep;
                 cj["values"] = c.values;
+                if (! c.labels.empty()) cj["labels"] = c.labels;
                 controls.push_back (std::move (cj));
             }
             if (! controls.empty()) sj["controls"] = std::move (controls);
@@ -176,22 +177,28 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     g["points"] = me.grid.points;
                     mj["grid"] = std::move (g);
                 }
-                if (me.trusted.hiHz > me.trusted.loHz)
+                // Emitted whenever levels were WEIGHED, even if the band came out empty: "tested and
+                // failed everywhere" and "never tested" must not look alike on the wire.
+                if (me.trusted.levels > 0)
                 {
                     nlohmann::json t;
-                    t["lo_hz"]   = me.trusted.loHz;
-                    t["hi_hz"]   = me.trusted.hiHz;
-                    t["span_db"] = me.trusted.spanDb;
-                    t["levels"]  = me.trusted.levels;
+                    t["lo_hz"]    = me.trusted.loHz;
+                    t["hi_hz"]    = me.trusted.hiHz;
+                    t["lo_index"] = me.trusted.loIndex;
+                    t["hi_index"] = me.trusted.hiIndex;
+                    t["span_db"]  = me.trusted.spanDb;
+                    t["levels"]   = me.trusted.levels;
                     mj["trusted"] = std::move (t);
                 }
                 auto positions = nlohmann::json::array();
                 for (const auto& p : me.positions)
                 {
                     nlohmann::json pj;
-                    pj["value"] = p.value;
-                    pj["norm"]  = p.norm;
-                    pj["db"]    = p.db;
+                    pj["value"]    = p.value;
+                    if (! p.label.empty()) pj["label"] = p.label;
+                    pj["norm"]     = p.norm;
+                    pj["level_db"] = p.levelDb;
+                    pj["db"]       = p.db;
                     positions.push_back (std::move (pj));
                 }
                 mj["positions"] = std::move (positions);
@@ -207,7 +214,8 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 bj["name"] = bl.name;
                 if (bl.sweep > 0)             bj["sweep"]     = bl.sweep;
                 if (! bl.reference.empty())   bj["reference"] = bl.reference;
-                if (! bl.dryEnd.empty())      bj["dry_end"]   = bl.dryEnd;
+                if (! bl.dryEnd.empty())       bj["dry_end"] = bl.dryEnd;
+                if (! bl.defaultValue.empty()) bj["default"] = bl.defaultValue;
                 if (! bl.law.empty())         bj["law"]       = bl.law;
                 bj["polarity"] = bl.polarity;
                 if (! bl.operatingPoint.empty())
@@ -224,24 +232,28 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     g["points"] = bl.grid.points;
                     bj["grid"] = std::move (g);
                 }
-                if (bl.trusted.hiHz > bl.trusted.loHz)
+                if (bl.trusted.levels > 0)
                 {
                     nlohmann::json t;
-                    t["lo_hz"]   = bl.trusted.loHz;
-                    t["hi_hz"]   = bl.trusted.hiHz;
-                    t["span_db"] = bl.trusted.spanDb;
-                    t["levels"]  = bl.trusted.levels;
+                    t["lo_hz"]    = bl.trusted.loHz;
+                    t["hi_hz"]    = bl.trusted.hiHz;
+                    t["lo_index"] = bl.trusted.loIndex;
+                    t["hi_index"] = bl.trusted.hiIndex;
+                    t["span_db"]  = bl.trusted.spanDb;
+                    t["levels"]   = bl.trusted.levels;
                     bj["trusted"] = std::move (t);
                 }
-                bj["dry"] = bl.dryDb;
+                bj["dry"]          = bl.dryDb;
+                bj["dry_level_db"] = bl.dryLevelDb;
                 auto bp = nlohmann::json::array();
                 for (const auto& p : bl.positions)
                 {
                     nlohmann::json pj;
-                    pj["value"]   = p.value;
-                    pj["norm"]    = p.norm;
-                    pj["dry_db"]  = p.dryDb;
-                    pj["wet_db"]  = p.wetDb;
+                    pj["value"]  = p.value;
+                    if (! p.label.empty()) pj["label"] = p.label;
+                    pj["norm"]   = p.norm;
+                    pj["dry_db"] = p.dryDb;
+                    pj["wet_db"] = p.wetDb;
                     bp.push_back (std::move (pj));
                 }
                 bj["positions"] = std::move (bp);
