@@ -6,6 +6,38 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [Unreleased] — the `.orbitrig` rig layer
+
+The codec described below packs one model. This layer describes a DEVICE: `rig.json` plus the `.namz`
+files it names, so a player can pick a model by a knob and apply the knobs that are not models. It has
+never been released, so nothing here is a compatibility promise yet — that is exactly why the breaking
+decisions are being made now.
+
+### Added
+- **`namz_rig.h` / `_load.h` / `_write.h`** — the manifest: a `chain` of stages, each with its `gear`,
+  its captured `controls` and the files that realise them.
+- **`measured`** — a linear control shipped as a dB magnitude table per position, relative to a stated
+  `reference` the models were all captured at. The player interpolates and builds a filter; the knob it
+  draws is continuous.
+- **`trusted`** — the band where that table was shown to BE a filter, over a stated drive range, with
+  the number of levels that showed it. Also as grid indices, so two readers cannot disagree about which
+  point an edge meant.
+- **`blend`** — a dry/wet mix: the dry path's own response and level, per-position gains, a polarity
+  defined against the model's output, and whether those gains were measured or assumed. Costs no extra
+  captures, because the dry signal is the DI the model is already fed.
+- **Per-value `labels`**, a per-position `level_db`, and a `default` position — three things a player
+  cannot derive and would otherwise invent.
+- **Conformance** — `conformance/rig/` pins the selection policy on a sparse matrix;
+  `conformance/rig-measured/` pins the shape a client is written against.
+
+### Removed
+- **`lp1_hz` / `gain_db` / `residual_db`** — a fitted 1-pole beside the curve, so a simple player could
+  skip the table. Measured on real hardware the best fit missed a Big Muff tone control by 15 to 65 dB.
+  Removed rather than deprecated: everything parsed, nothing complained, and the result was confidently
+  wrong.
+- **The clock vocabulary** (`12h`, `07h`) — degrees only. A knob's position is a number, and a filename
+  means nothing.
+
 ## [1.0.0] — 2026-07-05
 
 First stable release of the C++ reference.

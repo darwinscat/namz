@@ -59,6 +59,13 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
     nlohmann::json j = nlohmann::json::parse (manifestText, nullptr, /*allow_exceptions=*/false);
     if (j.is_discarded() || ! j.is_object()) return rig;
     if (detail::jstr (j, "format") != "orbitrig") return rig;
+    // THE VERSION GATE, which was written and never read. `schema` is bumped only for a change a reader
+    // cannot survive, so meeting a higher one means this reader is not equipped — and the honest answer
+    // is to refuse, not to load whatever it recognises and silently drop the rest. Loading a schema-2
+    // pack into a schema-1 reader is exactly the "everything parsed, nothing complained, the result was
+    // confidently wrong" failure the format's removal policy exists to prevent, and until this was
+    // checked the field was decoration.
+    if (detail::jint (j, "schema", 1) > kRigSchema) return rig;
 
     rig.rigId     = detail::jstr (j, "rig_id");
     rig.familyId  = detail::jstr (j, "family_id");
@@ -193,7 +200,8 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     bl.reference = detail::jstr (bj, "reference");
                     bl.dryEnd       = detail::jstr (bj, "dry_end");
                     bl.defaultValue = detail::jstr (bj, "default");
-                    bl.law       = detail::jstr (bj, "law", "linear");
+                    bl.law           = detail::jstr (bj, "law", "linear");
+                    bl.gainsMeasured = detail::jbool (bj, "gains_measured", false);
                     bl.polarity  = detail::jint (bj, "polarity", 1) < 0 ? -1 : 1;
                     if (auto op = bj.find ("operating_point"); op != bj.end() && op->is_object())
                         for (auto it = op->begin(); it != op->end(); ++it)

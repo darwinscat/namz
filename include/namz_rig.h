@@ -72,6 +72,11 @@ struct Control
 
 using Settings = std::map<std::string, std::string>;
 
+// The manifest schema this library speaks. A pack declaring a HIGHER one is refused rather than partly
+// understood: additive keys never bump it, so a bump means something a reader of this vintage would get
+// wrong. Readers must check it — the field is worthless if nobody does.
+inline constexpr int kRigSchema = 1;
+
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
 // ---------------------------------------------------------------------------------------------
@@ -545,6 +550,11 @@ struct Blend
     std::string reference;                     // where the models were captured: the full-wet end
     std::string dryEnd;                        // where the dry curve was measured: the full-dry end
     std::string law = "linear";                // how the gains below were derived (provenance)
+    // Whether those gains were MEASURED or merely derived from `law`. The distinction is not academic:
+    // a derived pair assumes the pot is an amplitude-linear crossfade, and a real one often is not. A
+    // reader cannot tell the two apart from the numbers, and a producer that has not measured them must
+    // not be able to imply that it has.
+    bool gainsMeasured = false;
     int polarity = 1;                          // +1, or -1 if the box inverts the dry path
     std::string defaultValue;                  // where a player starts the knob
     Settings operatingPoint;                   // capture axes held while sweeping (provenance)

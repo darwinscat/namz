@@ -161,6 +161,11 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 if (me.sweep > 0)            mj["sweep"]     = me.sweep;
                 if (! me.placement.empty())  mj["placement"] = me.placement;
                 if (! me.reference.empty())  mj["reference"] = me.reference;
+                // The loader has always read this; the writer did not emit it, so a pack that stated
+                // where the knob starts lost that fact the first time anything rewrote it — silently,
+                // because a missing `default` legally means "start at the reference". Conformance
+                // missed it for one reason: no fixture set the field. One now does.
+                if (! me.defaultValue.empty()) mj["default"] = me.defaultValue;
                 if (! me.operatingPoint.empty())
                 {
                     nlohmann::json op = nlohmann::json::object();
@@ -217,6 +222,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 if (! bl.dryEnd.empty())       bj["dry_end"] = bl.dryEnd;
                 if (! bl.defaultValue.empty()) bj["default"] = bl.defaultValue;
                 if (! bl.law.empty())         bj["law"]       = bl.law;
+                bj["gains_measured"] = bl.gainsMeasured;
                 bj["polarity"] = bl.polarity;
                 if (! bl.operatingPoint.empty())
                 {

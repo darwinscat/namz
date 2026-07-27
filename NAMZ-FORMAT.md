@@ -213,10 +213,11 @@ weights encode. Nothing is double-filtered and nothing lies.
 | field | meaning |
 |---|---|
 | `name` / `sweep` | the control and how far it turns, degrees — **`sweep` absent or 0 means a SWITCH**: a player draws a toggle over `positions` and does NOT interpolate between them, because a switch has nothing in between. With a sweep it is a dial: draw a knob and interpolate |
-| `placement` | where the filter goes in the chain; `post` = after this stage. An unknown value: SKIP the control rather than guess |
-| `reference` | the position every file was captured at (curves are relative to it) |
+| `placement` | where the filter goes. `post` — after the whole stage, including after a `blend` mix. `wet` — inside the wet path, before the mix, which is where a tone stack in a blended pedal physically sits: applying such a curve `post` would filter the clean signal the blend exists to keep clean. An unknown value: SKIP the control rather than guess |
+| `reference` | the position every file was captured at (curves are relative to it). It MUST appear in `positions[]`, and its `db[]` MUST be all zeros — that is what "flat by construction" means, and a reader may assert it. A non-zero reference row is a broken pack: the curve would be applied on top of a model that already contains it |
+| `default` | where a player starts the knob. Absent: start at `reference` |
 | `operating_point` | the capture axes held while sweeping — provenance, and the honest limit of the measurement |
-| `grid` | the log-spaced frequency grid `db` is sampled on: `f_lo`, `f_hi`, `points` |
+| `grid` | the log-spaced frequency grid `db` is sampled on. **Endpoints inclusive**: `f[i] = f_lo · (f_hi/f_lo)^(i / (points − 1))`, so `f[0]` is exactly `f_lo` and `f[points − 1]` exactly `f_hi`. The band-centre convention some analysers use would move the top of an 8-point 20 Hz – 20 kHz grid from 20 kHz to 13 kHz, and every reading with it |
 | `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels`. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at |
 | `positions[]` | per measured position, in dial order |
 
@@ -225,7 +226,8 @@ Each position carries the **measurement itself**, and nothing else:
 | field | meaning |
 |---|---|
 | `value` / `norm` | the position, and the same as 0…1 — rotation for a dial, evenly spaced steps for a switch, so a widget maps onto `norm` without knowing which it has. Entries are in the control's own order |
-| `db[]` | the measured response relative to `reference`, dB per `grid` point. REQUIRED: a position without it is unusable and must be skipped |
+| `db[]` | the measured response relative to `reference`, dB per `grid` point. **`20·log10` of an amplitude ratio**, never a power dB — a reader using `10^(db/10)` halves every deviation and nothing complains. Length MUST equal `grid.points`; a position where it does not is unusable and must be skipped, not truncated or padded. REQUIRED |
+| `level_db` | that position's broadband level over the trusted band, dB. Derivable from `db[]`, and shipped anyway so that every player agrees what "the same loudness" means instead of each choosing its own band and weighting |
 
 A curve, not a filter. There are no bands, no Q, no coefficients here — just a magnitude table, in
 physical units, on a stated frequency grid. Baked coefficients would be wrong at every sample rate
@@ -257,8 +259,20 @@ held over this much drive range. Verified over 24 dB on the same Big Muff, its t
 from 60 Hz up; measured over 42 dB, only from 700 Hz. Both numbers are correct about different
 questions, and the one a player needs is the first.
 
-Interpolate between positions to get a continuous knob (in dB, per grid point, against `norm`). Only
-controls AFTER the non-linearity qualify: a knob before the clipper changes the drive into it, so its
+**Interpolating.** Between positions, per grid point, **in dB, against `norm`** — not against the array
+index, which is the same thing only when the swept positions happen to be evenly spaced. `positions[]`
+is sorted ascending by `norm`, so a reader may index and interpolate with no search and no sort. Outside
+the outermost `norm`, **hold** the nearest swept curve; do not extrapolate, which on a 30 dB tilt invents
+decibels. Between grid points, interpolate in **log frequency**.
+
+**When two fields could disagree**, `norm` wins. It is derivable from `value` and `sweep` for a dial, and
+a reader that recomputes it will interpolate differently from one that reads it; the shipped number is
+the authority and `value` is the caption a human reads.
+
+**A control's default position is `default`** when stated, and `reference` otherwise. A player must not
+invent one: two readers starting the same pack at different knob positions make it two products.
+
+Only controls AFTER the non-linearity qualify: a knob before the clipper changes the drive into it, so its
 effect is not linear and subtracting it is a lie.
 
 ### `blend` — a dry/wet mix knob
@@ -297,11 +311,42 @@ out = polarity · dry_gain(pos) · (DI * dry) + wet_gain(pos) · model(DI)
 | `dry[]` | the dry path's response SHAPE, dB per `grid` point, with its own broadband level removed. On a bass pedal this is almost never flat — keeping a clean low end out of the distortion is what the circuit is for |
 | `dry_level_db` | the level that was removed: the dry path's broadband gain, dB, on the same scale as the model's own output. REQUIRED, and not derivable from anything else in the pack — a reader cannot re-measure it, because the pedal is not in their hands. Omit it and a dry path with 9 dB of insertion loss renders 9 dB too loud at every position that is not an end |
 | `trusted` | as in `measured`: where `dry` was shown to be a filter, over what drive range |
-| `polarity` | `+1`, or `-1` if the box inverts one path against the other. Not cosmetic: two paths summed out of phase gut the middle of the knob's travel, and a player that assumed `+1` would render the centre hollow |
-| `law` | how the gains were derived (`linear`, `equal_power`, …) — PROVENANCE only. Never something a reader must implement, because the gains are shipped per position, which is also how a pot with a peculiar taper stays expressible |
-| `positions[]` | `value`, `norm`, and the two gains `dry_db` / `wet_db`. `-120` means silent on that side |
+| `polarity` | the sign of the dry branch **against the model's output**, `+1` or `-1`. Defined that way and not "the box inverts one path", because a neural model is trained on the waveform and therefore already contains the wet path's own inversion: stating it against the hardware would have producer and consumer applying opposite signs. Measured by deconvolving a sweep at each end and comparing the sign of the impulse response's leading edge — the same recordings the rest of the block comes from |
+| `law` | how the gains were derived (`linear`, `equal_power`, …) — PROVENANCE only, never something a reader implements |
+| `gains_measured` | whether `dry_db`/`wet_db` were MEASURED or derived from `law`. A derived pair assumes the pot is an amplitude-linear crossfade and a real one often is not, and a reader cannot tell from the numbers. `false` means treat them as an estimate |
+| `positions[]` | `value`, `norm` (**rotation**, exactly as for `measured`, ascending), and the two gains `dry_db` / `wet_db`. `-120` means **exactly silent**, not 10⁻⁶: a literal conversion leaks both branches at the ends |
+
+**Interpolating the gains** between positions is done in **amplitude**, not in dB. Between `wet_db: -6`
+and `wet_db: -120` a dB interpolation puts the halfway point at −63 dB — inaudible — where the amplitude
+one puts it at −12; both readings are otherwise permitted by the same text, and they are 50 dB apart at
+the same knob position.
+
+**Phase and time.** The dry branch is summed with `model(DI)` in **parallel**, so how a reader realises
+`dry[]` decides the result, not just its tone. Build it **minimum phase**, and keep the two branches
+sample-aligned: a linear-phase FIR long enough to shape 80 Hz carries about 10 ms of bulk delay, and a
+blend with 10 ms between its branches is a flanger. For a series `measured` filter the choice is a
+nuance; here it is the whole sound.
+
+**Order within a stage.** `measured` controls compose in any order among themselves — magnitude-only
+linear filters commute. Against a `blend` they do not: apply every `placement: "wet"` filter to the
+model's output first, then the mix, then every `placement: "post"` filter to the result.
 
 A reader that does not implement `blend` skips it and plays the reference, exactly as with `measured`.
+
+**Control values are JSON strings**, always — `"300"`, not `300`. A degree is written as a bare integer
+inside that string, which is a different statement from being a JSON number, and a reader is entitled to
+accept only strings. A producer emitting numbers gets every position silently discarded.
+
+**`schema` is a duty, not a decoration.** A reader MUST refuse a manifest whose `schema` is higher than
+the one it implements. Additive keys never bump it, so a bump means something a reader of that vintage
+would get wrong — and loading it anyway, recognising what it knows and dropping the rest, is precisely
+the silent-and-confident failure the format's removal policy exists to prevent.
+
+**`family_id`** groups packs that are one physical box cut into several — a device captured as three
+packs plus its boost is still one pedal, and a player may offer them together. It is stamped into every
+`.namz` header as well as the manifest, so a file separated from its pack can still be recognised as
+part of the family. Nothing in this format requires a reader to act on it; it is there so that the fact
+survives, because it cannot be reconstructed later.
 
 Additive keys never bump `schema`; a bump is reserved for an incompatible change (avoided by
 design). The reference reader/selector is `namz::rig`.

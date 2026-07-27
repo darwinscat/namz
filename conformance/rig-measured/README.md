@@ -17,9 +17,13 @@ A player does two different things with those two knobs:
   filter from `positions[]` and applies it after the stage. Interpolating between positions is what
   makes it a continuous knob out of six measurements.
 
-Everything the tone knob needs is in physical units (`lp1_hz`, `gain_db`), so it works at any sample
-rate, plus the raw `db` curve as provenance — a better filter design can ship later without touching
-the pack. `residual_db` says how far the cheap 1-pole fit is from that curve.
+Everything the tone knob needs is the CURVE: `db[]`, one value per `grid` point, in physical
+units on a stated frequency grid. An earlier draft of this fixture also carried a fitted 1-pole
+corner (`lp1_hz`, `gain_db`) and a `residual_db` saying how far that fit lay from the truth, so
+that a simple player could skip the curve. Measuring real pedals killed it: a Big Muff tone
+control is a bass-cut/treble-boost blend of about 30 dB across the band, and the best 1-pole fit
+missed it by 15 to 65 dB. Those fields are gone from the format and from this pack; a reader
+written against them implements a dead design.
 
 Why this fixture exists separately from `../rig/`: that one pins the SELECTION policy on a sparse
 matrix, this one pins the shape a client is actually written against. See `../rig/README.md` for the

@@ -85,6 +85,7 @@ static Rig buildModel (const json& expected)
             me.sweep     = mx["sweep"].get<int>();
             me.placement = mx["placement"].get<std::string>();
             me.reference = mx["reference"].get<std::string>();
+            if (auto d = mx.find ("default"); d != mx.end()) me.defaultValue = d->get<std::string>();
             for (const auto& [k, v] : mx["operating_point"].items()) me.operatingPoint[k] = v.get<std::string>();
             me.grid.fLo    = mx["grid"]["f_lo"].get<double>();
             me.grid.fHi    = mx["grid"]["f_hi"].get<double>();
@@ -105,6 +106,44 @@ static Rig buildModel (const json& expected)
                 me.positions.push_back (std::move (p));
             }
             st.measured.push_back (std::move (me));
+        }
+
+    // The blend block, which had no fixture at all until now — the newest and most fragile part of the
+    // format, and the one where a reader's mistakes are silent: a wrong polarity or a dB-interpolated
+    // gain produces audio, just not the pedal's.
+    if (auto bs = sx.find ("blend"); bs != sx.end())
+        for (const auto& bx : *bs)
+        {
+            Blend bl;
+            bl.name          = bx["name"].get<std::string>();
+            bl.sweep         = bx["sweep"].get<int>();
+            bl.reference     = bx["reference"].get<std::string>();
+            bl.dryEnd        = bx["dry_end"].get<std::string>();
+            bl.defaultValue  = bx["default"].get<std::string>();
+            bl.law           = bx["law"].get<std::string>();
+            bl.gainsMeasured = bx["gains_measured"].get<bool>();
+            bl.polarity      = bx["polarity"].get<int>();
+            bl.grid.fLo      = bx["grid"]["f_lo"].get<double>();
+            bl.grid.fHi      = bx["grid"]["f_hi"].get<double>();
+            bl.grid.points   = bx["grid"]["points"].get<int>();
+            bl.trusted.loHz    = bx["trusted"]["lo_hz"].get<double>();
+            bl.trusted.hiHz    = bx["trusted"]["hi_hz"].get<double>();
+            bl.trusted.loIndex = bx["trusted"]["lo_index"].get<int>();
+            bl.trusted.hiIndex = bx["trusted"]["hi_index"].get<int>();
+            bl.trusted.spanDb  = bx["trusted"]["span_db"].get<double>();
+            bl.trusted.levels  = bx["trusted"]["levels"].get<int>();
+            bl.dryDb           = bx["dry"].get<std::vector<double>>();
+            bl.dryLevelDb      = bx["dry_level_db"].get<double>();
+            for (const auto& px : bx["positions"])
+            {
+                BlendPosition bp;
+                bp.value = px["value"].get<std::string>();
+                bp.norm  = px["norm"].get<double>();
+                bp.dryDb = px["dry_db"].get<double>();
+                bp.wetDb = px["wet_db"].get<double>();
+                bl.positions.push_back (std::move (bp));
+            }
+            st.blend.push_back (std::move (bl));
         }
 
     for (const auto& [name, settings] : sx["files"].items())
@@ -136,6 +175,11 @@ static void checkMeasured (const Stage& st, const json& sx, const char* via)
             && me.placement == mx["placement"].get<std::string>()
             && me.reference == mx["reference"].get<std::string>(), tag ("measured identity"));
         ok (me.grid.points == mx["grid"]["points"].get<int>(), tag ("measured grid"));
+        // Where the knob starts. A round trip that drops this is not detectably wrong — the field is
+        // optional and its absence means "start at the reference" — so only a fixture that sets it can
+        // catch a writer that forgets it. One did forget.
+        ok (me.defaultValue == (mx.find ("default") != mx.end() ? mx["default"].get<std::string>() : std::string{}),
+            tag ("measured default position survives the round trip"));
         if (auto t = mx.find ("trusted"); t != mx.end())
             ok (me.trusted.loHz == (*t)["lo_hz"].get<double>()
                 && me.trusted.hiHz == (*t)["hi_hz"].get<double>()
@@ -155,6 +199,43 @@ static void checkMeasured (const Stage& st, const json& sx, const char* via)
         // The knob is DSP, not an axis: it must never appear among the selectable controls.
         for (const auto& c : st.device.controls)
             ok (c.name != me.name, tag ("measured knob is not a selection control"));
+    }
+
+    if (auto bs = sx.find ("blend"); bs != sx.end())
+    {
+        ok (st.blend.size() == bs->size(), tag ("blend block count"));
+        for (std::size_t i = 0; i < st.blend.size() && i < bs->size(); ++i)
+        {
+            const auto& bl = st.blend[i];
+            const auto& bx = (*bs)[i];
+            ok (bl.name == bx["name"].get<std::string>()
+                && bl.reference == bx["reference"].get<std::string>()
+                && bl.dryEnd == bx["dry_end"].get<std::string>()
+                && bl.defaultValue == bx["default"].get<std::string>(),
+                tag ("blend identity: both ends named, and where the knob starts"));
+            // The two facts a reader cannot recover and cannot guess: how loud the dry path is against
+            // the model, and which way round the two branches sum.
+            ok (bl.dryLevelDb == bx["dry_level_db"].get<double>(), tag ("blend dry level"));
+            ok (bl.polarity == bx["polarity"].get<int>(), tag ("blend polarity"));
+            ok (bl.gainsMeasured == bx["gains_measured"].get<bool>(),
+                tag ("blend gains: measured, or derived from the law"));
+            ok (bl.dryDb == bx["dry"].get<std::vector<double>>(), tag ("blend dry curve"));
+            ok (bl.trusted.loIndex == bx["trusted"]["lo_index"].get<int>()
+                && bl.trusted.hiIndex == bx["trusted"]["hi_index"].get<int>(),
+                tag ("blend trusted band, as grid indices"));
+            ok (bl.positions.size() == bx["positions"].size(), tag ("blend position count"));
+            for (std::size_t k = 0; k < bl.positions.size() && k < bx["positions"].size(); ++k)
+            {
+                const auto& got = bl.positions[k];
+                const auto& px  = bx["positions"][k];
+                ok (got.value == px["value"].get<std::string>() && got.norm == px["norm"].get<double>()
+                    && got.dryDb == px["dry_db"].get<double>() && got.wetDb == px["wet_db"].get<double>(),
+                    tag ("blend position: rotation and both gains"));
+            }
+            // Same rule as measured, and for the same reason: no file carries a blend in its settings.
+            for (const auto& c : st.device.controls)
+                ok (c.name != bl.name, tag ("blend knob is not a selection control"));
+        }
     }
 }
 

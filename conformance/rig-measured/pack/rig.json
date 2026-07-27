@@ -1,6 +1,62 @@
 {
   "chain": [
     {
+      "blend": [
+        {
+          "default": "150",
+          "dry": [
+            2.1,
+            1.4,
+            0.3,
+            -0.2,
+            -0.6,
+            -2.4,
+            -6.1,
+            -11.8
+          ],
+          "dry_end": "0",
+          "dry_level_db": -8.5,
+          "gains_measured": false,
+          "grid": {
+            "f_hi": 20000.0,
+            "f_lo": 20.0,
+            "points": 8
+          },
+          "law": "linear",
+          "name": "blend",
+          "polarity": -1,
+          "positions": [
+            {
+              "dry_db": 0.0,
+              "norm": 0.0,
+              "value": "0",
+              "wet_db": -120.0
+            },
+            {
+              "dry_db": -6.02,
+              "norm": 0.5,
+              "value": "150",
+              "wet_db": -6.02
+            },
+            {
+              "dry_db": -120.0,
+              "norm": 1.0,
+              "value": "300",
+              "wet_db": 0.0
+            }
+          ],
+          "reference": "300",
+          "sweep": 300,
+          "trusted": {
+            "hi_hz": 9000.0,
+            "hi_index": 6,
+            "levels": 5,
+            "lo_hz": 40.0,
+            "lo_index": 1,
+            "span_db": 24.0
+          }
+        }
+      ],
       "controls": [
         {
           "name": "gain",
@@ -41,6 +97,7 @@
       "kind": "nam",
       "measured": [
         {
+          "default": "120",
           "grid": {
             "f_hi": 20000.0,
             "f_lo": 20.0,

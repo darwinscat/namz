@@ -30,6 +30,27 @@
         ]
       }
     ],
+    "blend": [
+      {
+        "name": "blend",
+        "sweep": 300,
+        "reference": "300",
+        "dry_end": "0",
+        "default": "150",
+        "law": "linear",
+        "gains_measured": false,
+        "polarity": -1,
+        "grid": { "f_lo": 20.0, "f_hi": 20000.0, "points": 8 },
+        "trusted": { "lo_hz": 40.0, "hi_hz": 9000.0, "lo_index": 1, "hi_index": 6, "span_db": 24.0, "levels": 5 },
+        "dry": [2.1, 1.4, 0.3, -0.2, -0.6, -2.4, -6.1, -11.8],
+        "dry_level_db": -8.5,
+        "positions": [
+          { "value": "0",   "norm": 0.0, "dry_db": 0.0,    "wet_db": -120.0 },
+          { "value": "150", "norm": 0.5, "dry_db": -6.02,  "wet_db": -6.02 },
+          { "value": "300", "norm": 1.0, "dry_db": -120.0, "wet_db": 0.0 }
+        ]
+      }
+    ],
     "files": {
       "m01.namz": { "gain": "300" },
       "m02.namz": { "gain": "0" },
