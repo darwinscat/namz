@@ -182,9 +182,12 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     g["points"] = me.grid.points;
                     mj["grid"] = std::move (g);
                 }
-                // Emitted whenever levels were WEIGHED, even if the band came out empty: "tested and
-                // failed everywhere" and "never tested" must not look alike on the wire.
-                if (me.trusted.levels > 0)
+                // Emitted only when levels were actually COMPARED — two or more. A single sweep per
+                // position proves nothing about drive, and the block it used to emit then said so in
+                // six fields that were always the same six values (whole grid, span 0, levels 1).
+                // Absence is the shorter way to say "never tested"; an empty band with levels >= 2
+                // still ships, because "tested and failed everywhere" is a different statement.
+                if (me.trusted.levels >= 2)
                 {
                     nlohmann::json t;
                     t["lo_hz"]    = me.trusted.loHz;
@@ -238,7 +241,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     g["points"] = bl.grid.points;
                     bj["grid"] = std::move (g);
                 }
-                if (bl.trusted.levels > 0)
+                if (bl.trusted.levels >= 2)   // …and the same for a blend
                 {
                     nlohmann::json t;
                     t["lo_hz"]    = bl.trusted.loHz;
