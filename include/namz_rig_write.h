@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include <map>
+#include <cmath>
 #include <string>
 
 namespace namz::rig
@@ -145,6 +146,8 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 nlohmann::json s = nlohmann::json::object();
                 for (const auto& [k, v] : fe.settings) s[k] = v;
                 fj["settings"] = std::move (s);
+                if (fe.inputDb < -0.0005 || fe.inputDb > 0.0005)
+                    fj["input_db"] = std::round (fe.inputDb * 100.0) / 100.0;
                 files.push_back (std::move (fj));
             }
             if (! files.empty()) sj["files"] = std::move (files);

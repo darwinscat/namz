@@ -134,6 +134,8 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (it.value().is_string())            fe.settings[it.key()] = it.value().get<std::string>();
                             else if (! it.value().is_structured()) fe.settings[it.key()] = it.value().dump();
                         }
+                    if (auto g = fj.find ("input_db"); g != fj.end() && g->is_number())
+                        fe.inputDb = g->get<double>();
                     if (! fe.id.empty()) st.device.files.push_back (std::move (fe));
                 }
 

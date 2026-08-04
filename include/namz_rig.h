@@ -187,6 +187,12 @@ struct FileEntry
 {
     std::string id;
     Settings settings;
+    // HOW MUCH SOFTER the signal reaching this model is, in dB (0 = untouched). A device may point
+    // two settings at one file — the bottom notches of a gain dial, where the hardware gives hiss and
+    // little else, played through the neighbour above them with less going in. Into the model, not
+    // out of it: less signal is also less drive, so the dial fades instead of falling into a hole.
+    // The capture side decides this and writes it down; a player only applies it.
+    double inputDb = 0.0;
 };
 
 struct Device
