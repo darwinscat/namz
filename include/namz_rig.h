@@ -75,7 +75,12 @@ using Settings = std::map<std::string, std::string>;
 // The manifest schema this library speaks. A pack declaring a HIGHER one is refused rather than partly
 // understood: additive keys never bump it, so a bump means something a reader of this vintage would get
 // wrong. Readers must check it — the field is worthless if nobody does.
-inline constexpr int kRigSchema = 1;
+// Bumped to 2 by the release that made `measured` ship a CURVE instead of a fitted 1-pole, added the
+// `blend` role, and started carrying what a reader cannot derive (dry level, trusted indices, the level
+// of each position). A reader of the previous vintage would parse such a manifest, recognise the keys it
+// knows, drop the rest and be confidently wrong about every measured knob — which is the exact failure
+// this number exists to prevent. See NAMZ-FORMAT.md.
+inline constexpr int kRigSchema = 2;
 
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"

@@ -96,7 +96,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
 {
     nlohmann::json j;
     j["format"] = "orbitrig";
-    j["schema"] = 1;
+    j["schema"] = kRigSchema;   // never a literal: the writer and the reader must bump together
     if (! rig.rigId.empty())     j["rig_id"]     = rig.rigId;
     if (! rig.familyId.empty())  j["family_id"]  = rig.familyId;
     if (! rig.name.empty())      j["name"]       = rig.name;

@@ -152,7 +152,7 @@ what it is (a player with no manifest falls back to scanning `.namz` + reading t
 
 ```json
 {
-  "format": "orbitrig", "schema": 1,
+  "format": "orbitrig", "schema": 2,
   "rig_id": "dc-ts9", "name": "Golden Drive", "modeled_by": "Darwin's Cat",
   "chain": [
     { "kind": "nam", "slot": "pedal",
