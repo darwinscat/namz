@@ -6,12 +6,15 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
-## [Unreleased] — the `.orbitrig` rig layer
+## [2.0.0] — 2026-08-07 — the `.orbitrig` rig layer
 
 The codec described below packs one model. This layer describes a DEVICE: `rig.json` plus the `.namz`
-files it names, so a player can pick a model by a knob and apply the knobs that are not models. It has
-never been released, so nothing here is a compatibility promise yet — that is exactly why the breaking
-decisions are being made now.
+files it names, so a player can pick a model by a knob and apply the knobs that are not models.
+
+An earlier draft of it went out under **v1.1.0 / v1.1.1** without a changelog entry — those tags carry
+the rig layer with a fitted 1-pole where the curve now is, and `schema` still reading 1. They are
+superseded, and this entry describes the layer as it actually stands. The codec itself
+(`.namz`, wire format 2) is untouched by all of it.
 
 ### Added
 - **`namz_rig.h` / `_load.h` / `_write.h`** — the manifest: a `chain` of stages, each with its `gear`,
@@ -38,6 +41,25 @@ decisions are being made now.
 - **The clock vocabulary** (`12h`, `07h`) — degrees only. A knob's position is a number, and a filename
   means nothing.
 
+### Changed
+- **`schema` 1 → 2.** None of the above is additive: a reader built for schema 1 would parse such a
+  manifest, recognise the keys it knows, drop the rest and be confidently wrong about every measured
+  knob. That is the failure the number exists to prevent, and it stayed at 1 through all of it. The
+  writer now spells it from the constant, so the two ends cannot drift apart again.
+- **`input_db` on a file entry** — one setting playing another's model with less signal going *into*
+  it, which is how the bottom of a gain dial fades instead of becoming a model of hiss.
+- **`trusted` ships only when levels were actually compared** — an untested claim now says so by being
+  absent, instead of by carrying a default that reads like a measurement.
+
+### Fixed
+- **`NAMZ_VERSION` told the truth for the first time since 1.0.0.** The macros in `namz.h` read
+  `"1.0.0"` while the tags walked to v1.1.1; a header that misreports itself is worse than one that
+  says nothing.
+
+### Known consequence
+A schema-1 pack that carried a `measured` control reads back with that knob silent — its old shape is
+no longer parsed. No such pack was ever published, so this costs nothing today.
+
 ## [1.0.0] — 2026-07-05
 
 First stable release of the C++ reference.
@@ -61,4 +83,5 @@ First stable release of the C++ reference.
 - **Lossless** to float32, **deterministic** (byte-identical across runs, platforms, and — via the
   conformance vectors — language ports), and **robust** (every malformed input is rejected cleanly).
 
+[2.0.0]: https://github.com/darwinscat/namz/releases/tag/v2.0.0
 [1.0.0]: https://github.com/darwinscat/namz/releases/tag/v1.0.0
