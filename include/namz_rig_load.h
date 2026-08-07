@@ -35,6 +35,17 @@ namespace detail
         if (auto it = j.find (key); it != j.end() && it->is_boolean()) return it->get<bool>();
         return dflt;
     }
+    // Same discipline for numbers: a non-numeric value yields the default instead of throwing.
+    inline double jnum (const nlohmann::json& j, const char* key, double dflt = 0.0)
+    {
+        if (auto it = j.find (key); it != j.end() && it->is_number()) return it->get<double>();
+        return dflt;
+    }
+    inline int jint (const nlohmann::json& j, const char* key, int dflt = 0)
+    {
+        if (auto it = j.find (key); it != j.end() && it->is_number_integer()) return it->get<int>();
+        return dflt;
+    }
 } // namespace detail
 
 // Parse rig.json. `ok` (when given) reports whether the text WAS a valid orbitrig manifest (valid
@@ -48,8 +59,16 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
     nlohmann::json j = nlohmann::json::parse (manifestText, nullptr, /*allow_exceptions=*/false);
     if (j.is_discarded() || ! j.is_object()) return rig;
     if (detail::jstr (j, "format") != "orbitrig") return rig;
+    // THE VERSION GATE, which was written and never read. `schema` is bumped only for a change a reader
+    // cannot survive, so meeting a higher one means this reader is not equipped — and the honest answer
+    // is to refuse, not to load whatever it recognises and silently drop the rest. Loading a schema-2
+    // pack into a schema-1 reader is exactly the "everything parsed, nothing complained, the result was
+    // confidently wrong" failure the format's removal policy exists to prevent, and until this was
+    // checked the field was decoration.
+    if (detail::jint (j, "schema", 1) > kRigSchema) return rig;
 
     rig.rigId     = detail::jstr (j, "rig_id");
+    rig.familyId  = detail::jstr (j, "family_id");
     rig.name      = detail::jstr (j, "name");
     rig.modeledBy = detail::jstr (j, "modeled_by");
 
@@ -70,6 +89,9 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
             st.model    = detail::jstr (*g, "model");
             st.gearType = detail::jstr (*g, "type");
         }
+        st.toneType = detail::jstr (sj, "tone_type");
+        st.voicing  = detail::jstr (sj, "voicing");
+        st.circuit  = detail::jstr (sj, "circuit");
 
         if (st.kind == StageKind::Nam)
         {
@@ -92,6 +114,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (vv.is_string())            ctl.values.push_back (vv.get<std::string>());
                             else if (! vv.is_structured()) ctl.values.push_back (vv.dump());
                         }
+                    if (auto l = cj.find ("labels"); l != cj.end() && l->is_array())
+                        for (const auto& lv : *l)
+                            if (lv.is_string()) ctl.labels.push_back (lv.get<std::string>());
+                    ctl.sweep = detail::jint (cj, "sweep");   // dial rotation; absent → not a dial
                     if (! ctl.name.empty() && ! ctl.values.empty()) st.device.controls.push_back (std::move (ctl));
                 }
             if (auto f = sj.find ("files"); f != sj.end() && f->is_array())
@@ -108,7 +134,115 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (it.value().is_string())            fe.settings[it.key()] = it.value().get<std::string>();
                             else if (! it.value().is_structured()) fe.settings[it.key()] = it.value().dump();
                         }
+                    if (auto g = fj.find ("input_db"); g != fj.end() && g->is_number())
+                        fe.inputDb = g->get<double>();
                     if (! fe.id.empty()) st.device.files.push_back (std::move (fe));
+                }
+
+            // `measured` — linear knobs shipped as DSP instead of as model axes. Deliberately NOT in
+            // `controls`: no file carries them in its settings, so a player that put them on the
+            // selection dial would build a knob resolve() can never satisfy.
+            if (auto m = sj.find ("measured"); m != sj.end() && m->is_array())
+                for (const auto& mj : *m)
+                {
+                    if (! mj.is_object()) continue;
+                    Measured me;
+                    me.name      = detail::jstr (mj, "name");
+                    me.sweep     = detail::jint (mj, "sweep");
+                    me.placement = detail::jstr (mj, "placement", "post");
+                    me.reference    = detail::jstr (mj, "reference");
+                    me.defaultValue = detail::jstr (mj, "default");
+                    if (auto op = mj.find ("operating_point"); op != mj.end() && op->is_object())
+                        for (auto it = op->begin(); it != op->end(); ++it)
+                        {
+                            if (it.value().is_string())            me.operatingPoint[it.key()] = it.value().get<std::string>();
+                            else if (! it.value().is_structured()) me.operatingPoint[it.key()] = it.value().dump();
+                        }
+                    if (auto t = mj.find ("trusted"); t != mj.end() && t->is_object())
+                    {
+                        me.trusted.loHz    = detail::jnum (*t, "lo_hz");
+                        me.trusted.hiHz    = detail::jnum (*t, "hi_hz");
+                        me.trusted.loIndex = detail::jint (*t, "lo_index");
+                        me.trusted.hiIndex = detail::jint (*t, "hi_index");
+                        me.trusted.spanDb = detail::jnum (*t, "span_db");
+                        me.trusted.levels = detail::jint (*t, "levels");
+                    }
+                    if (auto g = mj.find ("grid"); g != mj.end() && g->is_object())
+                    {
+                        me.grid.fLo    = detail::jnum (*g, "f_lo", 20.0);
+                        me.grid.fHi    = detail::jnum (*g, "f_hi", 20000.0);
+                        me.grid.points = detail::jint (*g, "points");
+                    }
+                    if (auto ps = mj.find ("positions"); ps != mj.end() && ps->is_array())
+                        for (const auto& pj : *ps)
+                        {
+                            if (! pj.is_object()) continue;
+                            MeasuredPosition p;
+                            p.value      = detail::jstr (pj, "value");
+                            p.label      = detail::jstr (pj, "label");
+                            p.norm       = detail::jnum (pj, "norm");
+                            p.levelDb    = detail::jnum (pj, "level_db");
+                            if (auto db = pj.find ("db"); db != pj.end() && db->is_array())
+                                for (const auto& v : *db)
+                                    if (v.is_number()) p.db.push_back (v.get<double>());
+                            if (! p.value.empty()) me.positions.push_back (std::move (p));
+                        }
+                    if (! me.name.empty() && ! me.positions.empty()) st.measured.push_back (std::move (me));
+                }
+
+            // `blend` — a dry/wet mix knob. Same reason as `measured` for staying out of `controls`, and
+            // the same reference invariant: the models were captured at the full-WET end.
+            if (auto b = sj.find ("blend"); b != sj.end() && b->is_array())
+                for (const auto& bj : *b)
+                {
+                    if (! bj.is_object()) continue;
+                    Blend bl;
+                    bl.name      = detail::jstr (bj, "name");
+                    bl.sweep     = detail::jint (bj, "sweep");
+                    bl.reference = detail::jstr (bj, "reference");
+                    bl.dryEnd       = detail::jstr (bj, "dry_end");
+                    bl.defaultValue = detail::jstr (bj, "default");
+                    bl.law           = detail::jstr (bj, "law", "linear");
+                    bl.gainsMeasured = detail::jbool (bj, "gains_measured", false);
+                    bl.polarity  = detail::jint (bj, "polarity", 1) < 0 ? -1 : 1;
+                    if (auto op = bj.find ("operating_point"); op != bj.end() && op->is_object())
+                        for (auto it = op->begin(); it != op->end(); ++it)
+                        {
+                            if (it.value().is_string())            bl.operatingPoint[it.key()] = it.value().get<std::string>();
+                            else if (! it.value().is_structured()) bl.operatingPoint[it.key()] = it.value().dump();
+                        }
+                    if (auto t = bj.find ("trusted"); t != bj.end() && t->is_object())
+                    {
+                        bl.trusted.loHz    = detail::jnum (*t, "lo_hz");
+                        bl.trusted.hiHz    = detail::jnum (*t, "hi_hz");
+                        bl.trusted.loIndex = detail::jint (*t, "lo_index");
+                        bl.trusted.hiIndex = detail::jint (*t, "hi_index");
+                        bl.trusted.spanDb = detail::jnum (*t, "span_db");
+                        bl.trusted.levels = detail::jint (*t, "levels");
+                    }
+                    if (auto g = bj.find ("grid"); g != bj.end() && g->is_object())
+                    {
+                        bl.grid.fLo    = detail::jnum (*g, "f_lo", 20.0);
+                        bl.grid.fHi    = detail::jnum (*g, "f_hi", 20000.0);
+                        bl.grid.points = detail::jint (*g, "points");
+                    }
+                    bl.dryLevelDb = detail::jnum (bj, "dry_level_db");
+                    if (auto d = bj.find ("dry"); d != bj.end() && d->is_array())
+                        for (const auto& v : *d)
+                            if (v.is_number()) bl.dryDb.push_back (v.get<double>());
+                    if (auto ps = bj.find ("positions"); ps != bj.end() && ps->is_array())
+                        for (const auto& pj : *ps)
+                        {
+                            if (! pj.is_object()) continue;
+                            BlendPosition p;
+                            p.value = detail::jstr (pj, "value");
+                            p.label = detail::jstr (pj, "label");
+                            p.norm  = detail::jnum (pj, "norm");
+                            p.dryDb = detail::jnum (pj, "dry_db", -120.0);
+                            p.wetDb = detail::jnum (pj, "wet_db");
+                            if (! p.value.empty()) bl.positions.push_back (std::move (p));
+                        }
+                    if (! bl.name.empty() && ! bl.positions.empty()) st.blend.push_back (std::move (bl));
                 }
         }
         else if (st.kind == StageKind::Ir)
