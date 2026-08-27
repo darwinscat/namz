@@ -6,6 +6,38 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [3.0.0] — 2026-08-28 — `tone`, and a knob as bands
+
+### Changed
+- **`measured` → `tone`.** The block, the key, and every name in the model (`Measured*` → `Tone*`,
+  `Stage::measured` → `Stage::tone`). `measured` is not read: no pack carrying it was ever published.
+- **`schema` 2 → 3.** Had the number stayed, a schema-2 reader would have found no `measured` key and
+  played every tone knob flat, silently; at 3 it refuses instead. A `schema` that is not a JSON integer
+  is refused too — the gate used to read `4.0` and `"4"` as 1, the oldest vintage there is.
+- **One form per knob.** A `tone` knob carries `positions` OR `sections`, never both; both on one knob
+  is an invalid manifest, refused whole (`ok = false`, empty chain — the same severity as a schema this
+  reader does not speak, and through `loadRig` the same headers-only fallback). `positions` stays in
+  the format permanently.
+- **`NAMZ_VERSION` is 3.0.0**, and so is the CMake project — moved with the tag this time.
+
+### Added
+- **`sections`** — the second form of a tone knob: parametric RBJ bands (`type` `low_shelf` | `bell` |
+  `high_shelf` | `tilt`, `hz`, `q`, a SIGNED `range_db` at the two stops; optional `pivot` on a tilt,
+  `hz_at` / `q_at` at the stops). The band formulas, the tilt trim, and the travel law — gain zero at
+  `reference` and linear in dB to each stop; frequency geometric, Q linear, the stop chosen by the sign
+  of `t`; `t` from POSITION, never from gain — are normative in NAMZ-FORMAT.md and identical to the
+  capture side's `ToneSections.h`.
+- `conformance/rig-measured` carries a second knob, `bass`, shipped as `sections` beside the `tone`
+  ladder: a low shelf that travels, and a tilt with a fitted hinge.
+- Tests for what was never tested: the schema gate (own, one above, older, float, string), both forms
+  on one knob, every way a band can be unreadable, and the sections round trip.
+
+### Fixed
+- The `rig-measured` golden pack carried `trusted.lo_index` / `hi_index` of 0 / 0 and `level_db` of
+  0.0 on every position while `expected.json` stated 1 / 6 and real levels: the regeneration recipe
+  never copied them and the check never compared them. Both do now, and the pack says what the fixture
+  says.
+
 ## [2.0.0] — 2026-08-07 — the `.orbitrig` rig layer
 
 The codec described below packs one model. This layer describes a DEVICE: `rig.json` plus the `.namz`
@@ -83,5 +115,6 @@ First stable release of the C++ reference.
 - **Lossless** to float32, **deterministic** (byte-identical across runs, platforms, and — via the
   conformance vectors — language ports), and **robust** (every malformed input is rejected cleanly).
 
+[3.0.0]: https://github.com/darwinscat/namz/releases/tag/v3.0.0
 [2.0.0]: https://github.com/darwinscat/namz/releases/tag/v2.0.0
 [1.0.0]: https://github.com/darwinscat/namz/releases/tag/v1.0.0

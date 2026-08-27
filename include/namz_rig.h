@@ -75,12 +75,17 @@ using Settings = std::map<std::string, std::string>;
 // The manifest schema this library speaks. A pack declaring a HIGHER one is refused rather than partly
 // understood: additive keys never bump it, so a bump means something a reader of this vintage would get
 // wrong. Readers must check it — the field is worthless if nobody does.
-// Bumped to 2 by the release that made `measured` ship a CURVE instead of a fitted 1-pole, added the
-// `blend` role, and started carrying what a reader cannot derive (dry level, trusted indices, the level
-// of each position). A reader of the previous vintage would parse such a manifest, recognise the keys it
-// knows, drop the rest and be confidently wrong about every measured knob — which is the exact failure
-// this number exists to prevent. See NAMZ-FORMAT.md.
-inline constexpr int kRigSchema = 2;
+// Bumped to 2 by the release that made the linear knobs ship a CURVE instead of a fitted 1-pole, added
+// the `blend` role, and started carrying what a reader cannot derive (dry level, trusted indices, the
+// level of each position). A reader of the previous vintage would parse such a manifest, recognise the
+// keys it knows, drop the rest and be confidently wrong about every such knob — which is the exact
+// failure this number exists to prevent.
+// Bumped to 3 when that block was renamed `measured` → `tone` and given a second form, `sections`: a
+// knob as parametric bands instead of a table. Had it stayed at 2, a schema-2 reader would have found no
+// `measured` key and played every tone knob flat, silently; at 3 it refuses. `measured` is not read at
+// all — no pack with it was ever published.
+// See NAMZ-FORMAT.md.
+inline constexpr int kRigSchema = 3;
 
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
@@ -427,21 +432,26 @@ struct EqHints
 };
 
 // ---------------------------------------------------------------------------------------------
-// MEASURED controls — a linear knob the capture tool did NOT turn into a model axis.
+// TONE controls — a linear knob the capture tool did NOT turn into a model axis.
 //
 // A tone control sitting after the clipper is linear: sweeping it changes the frequency response,
 // not the distortion. Capturing it as a matrix axis would multiply the take count for nothing, so
 // the capture tool measures it instead (a short sweep per position, deconvolved against the
-// reference position) and the pack ships the recovered response. The player applies it as DSP and
-// gets a CONTINUOUS knob out of a handful of measured points.
+// reference position) and the pack ships what it found. The player applies it as DSP and gets a
+// CONTINUOUS knob out of a handful of measured points.
 //
 // Format invariant: every file of the stage was captured with this control AT `reference`, and the
-// responses are relative to it. So the reference position is flat by construction — a player that
-// ignores `measured` (or a single .namz pulled out of the pack) plays the reference tone, which is
+// description is relative to it. So the reference position is flat by construction — a player that
+// ignores `tone` (or a single .namz pulled out of the pack) plays the reference tone, which is
 // exactly what its weights encode. No lie, no double-filtering.
+//
+// ONE FORM PER KNOB. A tone knob is described EITHER by `positions` — the measured ladder, a dB table
+// per swept position — OR by `sections` — the same knob rewritten as parametric bands whose gain
+// moves with the dial (see Section). A manifest giving both for one knob is invalid, and the reader
+// refuses the whole manifest rather than picking one: two descriptions of one knob is two products.
 // ---------------------------------------------------------------------------------------------
 
-struct MeasuredPosition
+struct TonePosition
 {
     std::string value;           // the dial position, degrees ("0" … "300")
     std::string label;           // optional display name ("Scooped") — the producer knows it, a reader cannot
@@ -450,14 +460,17 @@ struct MeasuredPosition
     std::vector<double> db;      // the measured response against the reference, dB per grid point
 };
 
-// The log-spaced frequency grid `MeasuredPosition::db` is sampled on. points == 0 → the control is
+// The log-spaced frequency grid `TonePosition::db` is sampled on. points == 0 → a `positions` knob is
 // unusable and a reader must skip it: the curve IS the description, there is nothing else to fall
 // back to. Earlier drafts shipped a fitted 1-pole corner beside it (`lp1_hz` + `gain_db`) and a
 // residual to say how far the fit lay from the truth. That was withdrawn after measuring real pedals:
 // a Big Muff tone control is a bass-cut/treble-boost blend, a 30 dB tilt across the band, and the
 // best 1-pole fit missed it by 15-65 dB. A number that wrong is worse than no number, because a
 // player written against it produces confident nonsense. The curve costs a few hundred bytes.
-struct MeasuredGrid
+// (`sections`, below, is not that 1-pole coming back: a shelf or bell fitted on EVERY position at once,
+// with a residual the producer can read before choosing to ship it, is a different claim from a corner
+// fitted to one.)
+struct ToneGrid
 {
     double fLo = 20.0, fHi = 20000.0;
     int points = 0;
@@ -477,7 +490,7 @@ struct MeasuredGrid
 // 40 dB down goes clean and its bass stops matching, which is the pedal being honest rather than the
 // measurement failing. A reader that cares about very quiet playing should treat the band as untested
 // there, not as guaranteed.
-struct MeasuredTrust
+struct ToneTrust
 {
     // loHz == hiHz == 0 with levels == 0: not stated — nothing was tested, trust the whole grid.
     // hiHz <= loHz with levels >= 2: TESTED AND FAILED EVERYWHERE. The curves disagreed at every
@@ -496,27 +509,95 @@ struct MeasuredTrust
                                               // is only as strong as its weakest position
 };
 
-struct Measured
+// One parametric band of a `sections` knob: RBJ cookbook shapes, the same formulas NAMZ-FORMAT.md
+// spells out so that a curve designed on the capture side and a biquad run on the player side describe
+// one filter.
+enum class SectionKind { LowShelf, Bell, HighShelf, Tilt };
+
+inline const char* sectionKindToString (SectionKind k)
+{
+    switch (k)
+    {
+        case SectionKind::LowShelf:  return "low_shelf";
+        case SectionKind::Bell:      return "bell";
+        case SectionKind::HighShelf: return "high_shelf";
+        case SectionKind::Tilt:      return "tilt";
+    }
+    return "";
+}
+
+// false for a `type` this reader does not know — and then the whole knob is unusable, not just the
+// band: playing the bands you understand and dropping the one you don't is a different pedal, whereas
+// playing the reference position (no bands at all) is the one thing every tone knob promises to be.
+inline bool sectionKindFrom (const std::string& s, SectionKind& out)
+{
+    if (s == "low_shelf")  { out = SectionKind::LowShelf;  return true; }
+    if (s == "bell")       { out = SectionKind::Bell;      return true; }
+    if (s == "high_shelf") { out = SectionKind::HighShelf; return true; }
+    if (s == "tilt")       { out = SectionKind::Tilt;      return true; }
+    return false;
+}
+
+// The band's KIND is fixed; its GAIN moves with the dial, and where stated, its frequency and Q drift
+// toward what they are at the two stops. Everything is anchored at `reference`, the position the takes
+// were shot at, where the band's gain is zero by definition — so a knob left at the reference is flat,
+// exactly as a `positions` knob is. The travel law (how t runs from -1 at the minus stop through 0 at
+// the reference to +1 at the plus stop, and how each quantity follows it) is in NAMZ-FORMAT.md.
+//
+// NOT THE CAPTURE SIDE'S FIELDS, though the names match. Here `Min`/`Max` and `range_db[0]`/`[1]` are
+// by POSITION — the dial's 0 and its `sweep`. The capture side's Section (ToneSections.h) names its
+// ends by the SIGN of the gain — most-cut, most-boost — and its reach pair by magnitude. The two agree
+// only while the gain at 0° is the negative one; a knob that boosts at 0° swaps them. A 1:1 copy of the
+// fields is therefore the natural bug, and the conversion must look at which stop cuts.
+struct Section
+{
+    SectionKind kind = SectionKind::Bell;
+    double hz = 0.0;                          // centre (bell) or corner (shelf, tilt) AT THE REFERENCE, Hz
+    double q  = 0.0;                          // …and its Q there
+    // `range_db`: the band's gain at the MINUS stop (the dial's 0) and at the PLUS stop (the dial's
+    // `sweep`), SIGNED — a cut is negative. Zero at the reference, linear in dB toward each stop.
+    double dbAtMin = 0.0, dbAtMax = 0.0;
+    // Tilt only, and meaningless for the other kinds: where the seesaw hinges. The tilt is a high shelf
+    // of gain g with the whole signal stepped down by pivot·g, so its top arm ends at +g·(1-pivot) and
+    // its bottom arm at -g·pivot. 0.5 is the symmetric seesaw; the fitted value is what ships.
+    double pivot = 0.5;
+    // `hz_at` / `q_at`: what `hz` and `q` become at the minus and plus stops. 0 = not stated, and a
+    // quantity that is not stated does not move — the band is one frozen shape across the travel. In
+    // the pack a side that does not move is spelled as the reference value (a 0 is not a frequency);
+    // the writer spells it that way and the loader reads it back as 0, so "does not move" has ONE
+    // spelling here and write→load is field-exact.
+    double hzAtMin = 0.0, hzAtMax = 0.0;
+    double qAtMin  = 0.0, qAtMax  = 0.0;
+};
+
+struct Tone
 {
     std::string name;                         // the knob, e.g. "tone"
-    int sweep = 0;                            // dial rotation, degrees
+    int sweep = 0;                            // dial rotation, degrees; 0 = a switch (positions only)
     std::string placement = "post";           // where the filter goes; unknown value → player SKIPS it
     std::string reference;                    // the position every file of the stage was captured at
     Settings operatingPoint;                  // capture axes held while sweeping (provenance)
     std::string defaultValue;                 // where a player starts the knob; the reference is usually
                                               // an END of travel, so it is the wrong thing to reach for
-    MeasuredGrid grid;
-    MeasuredTrust trusted;
-    // ASCENDING by `norm`. Sorted by the producer so a player can index and lerp with no search, no
-    // sort and no defence: a declared order like "300,240,…,0" is a normal way to write a knob that
-    // reads 10 to 0, and it used to ship descending norms straight into readers that assume otherwise.
-    std::vector<MeasuredPosition> positions;
+    ToneGrid grid;                            // positions only: what `db[]` is sampled on
+    ToneTrust trusted;
+    // EXACTLY ONE of the two below is non-empty — the writer emits one, the reader refuses a manifest
+    // carrying both for one knob, and a knob with neither is dropped (nothing to apply).
+    //
+    // `positions`: ASCENDING by `norm`. Sorted by the producer so a player can index and lerp with no
+    // search, no sort and no defence: a declared order like "300,240,…,0" is a normal way to write a
+    // knob that reads 10 to 0, and it used to ship descending norms straight into readers that assume
+    // otherwise.
+    std::vector<TonePosition> positions;
+    // `sections`: the knob as bands, applied in series; magnitude-only filters, so their order is
+    // immaterial. Needs a `sweep` — the travel law is stated in rotation, and a switch has none.
+    std::vector<Section> sections;
 };
 
 // ---------------------------------------------------------------------------------------------
 // `blend` — a dry/wet mix knob, the third kind of control and neither of the other two.
 //
-// A blend is not a filter, so it cannot be `measured`; and it must not be a captured axis, because
+// A blend is not a filter, so it cannot be a `tone`; and it must not be a captured axis, because
 // capturing it would multiply the take count to ship something the player already has for free. The dry
 // signal IS the DI the model is being fed. Eleven blend positions as an axis would be eleven copies of
 // one model plus arithmetic.
@@ -538,14 +619,14 @@ struct Measured
 // only, never something a reader must implement, because the gains themselves are shipped per position.
 // A pot with a peculiar taper is expressible by simply carrying its numbers.
 //
-// Invariant, the same one `measured` has: every model of the stage was captured with the blend at
+// Invariant, the same one `tone` has: every model of the stage was captured with the blend at
 // `reference` — the full-WET end. So a player that ignores `blend`, or a lone .namz pulled out of the
 // pack, plays full wet, which is exactly what those weights encode. Nothing is double-mixed.
 struct BlendPosition
 {
     std::string value;           // the knob position
     std::string label;           // optional display name
-    // 0..1 across the sweep — ROTATION, exactly as in MeasuredPosition, ascending across positions[].
+    // 0..1 across the sweep — ROTATION, exactly as in TonePosition, ascending across positions[].
     // It used to be the mix fraction here and rotation there: one field name, one pack, two meanings.
     // Which end is wet is said by `reference`, which end is dry by `dry_end`; norm says where the knob
     // points, and nothing else.
@@ -569,8 +650,8 @@ struct Blend
     int polarity = 1;                          // +1, or -1 if the box inverts the dry path
     std::string defaultValue;                  // where a player starts the knob
     Settings operatingPoint;                   // capture axes held while sweeping (provenance)
-    MeasuredGrid grid;
-    MeasuredTrust trusted;                     // where `dry` is a filter — same rules as `measured`
+    ToneGrid grid;
+    ToneTrust trusted;                         // where `dry` is a filter — same rules as `tone`
     // The dry path's response: SHAPE in `dryDb` (its own broadband level removed) and that level in
     // `dryLevelDb`. Both are needed and neither can be recovered from the other. Without the level a
     // player cannot know how loud the dry path is against the model, and no reader can re-measure it —
@@ -605,7 +686,7 @@ struct Stage
     // `circuit` because a stage's `device` is already its selectable matrix.
     std::string circuit;
     Device device;                                  // Nam: controls + files (the selectable matrix)
-    std::vector<Measured> measured;                 // Nam: linear knobs shipped as DSP, not as axes
+    std::vector<Tone> tone;                         // Nam: linear knobs shipped as DSP, not as axes
     std::vector<Blend> blend;                       // Nam: dry/wet mix knobs — the player mixes, see above
     std::vector<std::string> irFiles;               // Ir: cabinet impulse file names
     EqHints eq;                                     // Eq: the guidance above

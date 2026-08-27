@@ -152,13 +152,19 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             }
             if (! files.empty()) sj["files"] = std::move (files);
 
-            // The measured (linear) knobs — see namz_rig.h. Client-ready first: `norm` + a fit in
-            // PHYSICAL units (Hz / dB), which survives any sample rate, with the raw `db` curve as
-            // optional provenance a player may upgrade to later.
-            auto measured = nlohmann::json::array();
-            for (const auto& me : st.measured)
+            // The tone (linear) knobs — see namz_rig.h. ONE FORM PER KNOB: `sections` when the model has
+            // them, else `positions`, never both — a reader refuses a manifest that carries both for one
+            // knob, so a writer that emitted both would produce a pack nothing can load. `sections` wins
+            // because it is the form a producer CHOSE: the ladder is what the bands were fitted to, and
+            // a model still holding it beside the fit has not un-chosen anything.
+            auto tone = nlohmann::json::array();
+            for (const auto& me : st.tone)
             {
-                if (me.name.empty() || me.positions.empty()) continue;
+                if (me.name.empty() || (me.positions.empty() && me.sections.empty())) continue;
+                const bool asSections = ! me.sections.empty();
+                // …and a `sections` knob with no sweep is one the reader drops on sight (the travel law
+                // runs on rotation), so writing it would only make a pack that loses a knob in transit.
+                if (asSections && me.sweep <= 0) continue;
                 nlohmann::json mj;
                 mj["name"] = me.name;
                 if (me.sweep > 0)            mj["sweep"]     = me.sweep;
@@ -176,8 +182,9 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     mj["operating_point"] = std::move (op);
                 }
                 // The grid and the curves travel together or not at all: a curve without the grid it
-                // was sampled on cannot be applied to anything.
-                if (me.grid.points > 0)
+                // was sampled on cannot be applied to anything — and a grid without curves says nothing,
+                // so a `sections` knob carries none.
+                if (! asSections && me.grid.points > 0)
                 {
                     nlohmann::json g;
                     g["f_lo"]   = me.grid.fLo;
@@ -201,21 +208,50 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     t["levels"]   = me.trusted.levels;
                     mj["trusted"] = std::move (t);
                 }
-                auto positions = nlohmann::json::array();
-                for (const auto& p : me.positions)
+                if (asSections)
                 {
-                    nlohmann::json pj;
-                    pj["value"]    = p.value;
-                    if (! p.label.empty()) pj["label"] = p.label;
-                    pj["norm"]     = p.norm;
-                    pj["level_db"] = p.levelDb;
-                    pj["db"]       = p.db;
-                    positions.push_back (std::move (pj));
+                    auto sections = nlohmann::json::array();
+                    for (const auto& sc : me.sections)
+                    {
+                        nlohmann::json x;
+                        x["type"]     = sectionKindToString (sc.kind);
+                        x["hz"]       = sc.hz;
+                        x["q"]        = sc.q;
+                        x["range_db"] = nlohmann::json::array ({ sc.dbAtMin, sc.dbAtMax });
+                        // Only a tilt hinges; writing a pivot on a shelf would invite a reader to apply it.
+                        if (sc.kind == SectionKind::Tilt) x["pivot"] = sc.pivot;
+                        // A travel is written as the pair at the two stops. A side the model left at 0
+                        // ("does not move") is written as the reference value itself — the same statement
+                        // in the pack's vocabulary, where an absent KEY means neither side moves and a
+                        // present one must say both.
+                        if (sc.hzAtMin > 0.0 || sc.hzAtMax > 0.0)
+                            x["hz_at"] = nlohmann::json::array ({ sc.hzAtMin > 0.0 ? sc.hzAtMin : sc.hz,
+                                                                  sc.hzAtMax > 0.0 ? sc.hzAtMax : sc.hz });
+                        if (sc.qAtMin > 0.0 || sc.qAtMax > 0.0)
+                            x["q_at"]  = nlohmann::json::array ({ sc.qAtMin > 0.0 ? sc.qAtMin : sc.q,
+                                                                  sc.qAtMax > 0.0 ? sc.qAtMax : sc.q });
+                        sections.push_back (std::move (x));
+                    }
+                    mj["sections"] = std::move (sections);
                 }
-                mj["positions"] = std::move (positions);
-                measured.push_back (std::move (mj));
+                else
+                {
+                    auto positions = nlohmann::json::array();
+                    for (const auto& p : me.positions)
+                    {
+                        nlohmann::json pj;
+                        pj["value"]    = p.value;
+                        if (! p.label.empty()) pj["label"] = p.label;
+                        pj["norm"]     = p.norm;
+                        pj["level_db"] = p.levelDb;
+                        pj["db"]       = p.db;
+                        positions.push_back (std::move (pj));
+                    }
+                    mj["positions"] = std::move (positions);
+                }
+                tone.push_back (std::move (mj));
             }
-            if (! measured.empty()) sj["measured"] = std::move (measured);
+            if (! tone.empty()) sj["tone"] = std::move (tone);
 
             auto blends = nlohmann::json::array();
             for (const auto& bl : st.blend)
