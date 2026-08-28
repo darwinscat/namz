@@ -89,12 +89,171 @@ inline std::map<std::string, std::string> stampMeta (const Rig& rig, const Stage
     return m;
 }
 
+// ---------------------------------------------------------------------------------------------
+// THE LAYOUT of rig.json. A manifest is read by machines and inspected by people, and a generic
+// pretty-printer serves only the first: every key on its own line, every number of a curve on its
+// own line, keys in alphabetical order (so `chain` came before `format` and a band's `type` came
+// last). This emitter writes the same JSON the way a person lays it out:
+//
+//   * keys in the order the format lists them — `ordered_json` keeps insertion order, and the writer
+//     inserts in that order;
+//   * a LEAF object — one whose values are scalars, arrays of scalars, or objects of scalars — on ONE
+//     line: a control, a file entry, a band, a position, `gear`, `grid`, `trusted`;
+//   * an array of scalars inline, wrapped at `width` with the continuation aligned under its first
+//     element — a dial's twenty-one values, a curve's points;
+//   * inside the objects whose shape the format fixes, the scalars that belong together share a line
+//     (`"format", "schema"` / `"rig_id", "name", "modeled_by"`; a knob's `"name", "sweep",
+//     "placement"` / `"reference", "default"`); everything else gets a line of its own.
+//
+// Nothing here changes a value: numbers are spelled by nlohmann exactly as before, and a reader that
+// parses JSON — which is every reader — sees the same document. Only the bytes of the golden packs
+// move, and the conformance test regenerates them from the same writer.
+// ---------------------------------------------------------------------------------------------
+namespace detail
+{
+    using OJ = nlohmann::ordered_json;
+
+    inline bool isScalar (const OJ& v) { return ! v.is_structured(); }
+    inline bool isScalarArray (const OJ& v)
+    {
+        if (! v.is_array()) return false;
+        for (const auto& e : v) if (! isScalar (e)) return false;
+        return true;
+    }
+    inline bool isScalarObject (const OJ& v)
+    {
+        if (! v.is_object()) return false;
+        for (const auto& kv : v.items()) if (! isScalar (kv.value())) return false;
+        return true;
+    }
+    inline bool isLeaf (const OJ& v)
+    {
+        if (! v.is_object()) return false;
+        for (const auto& kv : v.items())
+            if (! (isScalar (kv.value()) || isScalarArray (kv.value()) || isScalarObject (kv.value()))) return false;
+        return true;
+    }
+
+    // The scalars that share a line, by the key the object sits under ("" = the manifest itself).
+    inline std::vector<std::vector<std::string>> lineGroups (const std::string& under)
+    {
+        if (under.empty())     return { { "format", "schema" }, { "rig_id", "family_id", "name", "modeled_by" } };
+        if (under == "chain")  return { { "kind", "slot" }, { "tone_type", "voicing", "circuit" },
+                                        { "model", "tone_only", "show_curve" } };
+        if (under == "tone")   return { { "name", "sweep", "placement" }, { "reference", "default" } };
+        if (under == "blend")  return { { "name", "sweep", "reference", "dry_end" },
+                                        { "default", "law", "gains_measured", "polarity" } };
+        return {};
+    }
+    inline int groupOf (const std::vector<std::vector<std::string>>& groups, const std::string& key)
+    {
+        for (std::size_t g = 0; g < groups.size(); ++g)
+            for (const auto& k : groups[g]) if (k == key) return (int) g;
+        return -1;
+    }
+
+    inline std::size_t column (const std::string& out)
+    {
+        const auto nl = out.rfind ('\n');
+        return nl == std::string::npos ? out.size() : out.size() - nl - 1;
+    }
+
+    // One line, wrapped only inside arrays of scalars.
+    inline void emitInline (std::string& out, const OJ& v, std::size_t width)
+    {
+        if (isScalar (v)) { out += v.dump(); return; }
+        if (v.is_array())
+        {
+            out += '[';
+            const auto align = column (out);
+            bool first = true;
+            for (const auto& e : v)
+            {
+                const auto piece = e.dump();
+                if (! first)
+                {
+                    out += ',';
+                    if (column (out) + 1 + piece.size() > width) { out += '\n'; out += std::string (align, ' '); }
+                    else out += ' ';
+                }
+                out += piece;
+                first = false;
+            }
+            out += ']';
+            return;
+        }
+        // an object of scalars, or a leaf: `{ "k": v, "k2": v2 }`. A member that would run past the
+        // width starts a new line, aligned under the first member — so a position breaks before its
+        // `db`, not inside it, and an array wraps within itself only when it is too long on its own.
+        if (v.empty()) { out += "{}"; return; }
+        out += "{ ";
+        const auto align = column (out);
+        bool first = true;
+        for (const auto& kv : v.items())
+        {
+            std::string key = OJ (kv.key()).dump(); key += ": ";
+            std::string measure; emitInline (measure, kv.value(), std::string::npos);   // unwrapped
+            if (! first)
+            {
+                out += ',';
+                if (column (out) + 1 + key.size() + measure.size() + 2 > width) { out += '\n'; out += std::string (align, ' '); }
+                else out += ' ';
+            }
+            out += key;
+            emitInline (out, kv.value(), width);
+            first = false;
+        }
+        out += " }";
+    }
+
+    inline void emit (std::string& out, const OJ& v, const std::string& under, int depth, int step, std::size_t width)
+    {
+        if (isScalar (v) || isScalarArray (v) || isScalarObject (v) || isLeaf (v)) { emitInline (out, v, width); return; }
+        const std::string ind (std::size_t (depth * step), ' '), inner (std::size_t ((depth + 1) * step), ' ');
+        if (v.is_array())
+        {
+            out += "[\n";
+            bool first = true;
+            for (const auto& e : v)
+            {
+                if (! first) out += ",\n";
+                out += inner;
+                emit (out, e, under, depth + 1, step, width);
+                first = false;
+            }
+            out += '\n'; out += ind; out += ']';
+            return;
+        }
+        // a multi-line object: grouped scalars share a line, everything else has its own
+        const auto groups = lineGroups (under);
+        out += "{\n";
+        int openGroup = -1;
+        bool first = true;
+        for (const auto& kv : v.items())
+        {
+            const int g = isScalar (kv.value()) ? groupOf (groups, kv.key()) : -1;
+            if (! first)
+            {
+                if (g >= 0 && g == openGroup) out += ", ";
+                else { out += ",\n"; out += inner; }
+            }
+            else out += inner;
+            openGroup = g;
+            out += OJ (kv.key()).dump(); out += ": ";
+            emit (out, kv.value(), kv.key(), depth + 1, step, width);
+            first = false;
+        }
+        out += '\n'; out += ind; out += '}';
+    }
+} // namespace detail
+
 // rig.json text — the pack's source of truth (loadRigManifest is the exact inverse for every field
 // the model carries). Empty strings are omitted; an Unknown stage writes its preserved rawKind so
-// a pack passing through an old tool never loses stages it didn't understand.
+// a pack passing through an old tool never loses stages it didn't understand. Laid out for a reader
+// with eyes — see detail::emit above; `indent` is the step.
 inline std::string writeManifest (const Rig& rig, int indent = 2)
 {
-    nlohmann::json j;
+    nlohmann::ordered_json j;
     j["format"] = "orbitrig";
     j["schema"] = kRigSchema;   // never a literal: the writer and the reader must bump together
     if (! rig.rigId.empty())     j["rig_id"]     = rig.rigId;
@@ -102,10 +261,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
     if (! rig.name.empty())      j["name"]       = rig.name;
     if (! rig.modeledBy.empty()) j["modeled_by"] = rig.modeledBy;
 
-    auto chain = nlohmann::json::array();
+    auto chain = nlohmann::ordered_json::array();
     for (const auto& st : rig.chain)
     {
-        nlohmann::json sj;
+        nlohmann::ordered_json sj;
         const auto kind = st.kind != StageKind::Unknown ? std::string (stageKindToString (st.kind))
                                                         : st.rawKind;
         if (kind.empty()) continue;   // a stage with no kind at all cannot be represented
@@ -113,7 +272,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
         if (! st.slot.empty()) sj["slot"] = st.slot;
         if (! st.make.empty() || ! st.model.empty() || ! st.gearType.empty())
         {
-            nlohmann::json g;
+            nlohmann::ordered_json g;
             if (! st.make.empty())     g["make"]  = st.make;
             if (! st.model.empty())    g["model"] = st.model;
             if (! st.gearType.empty()) g["type"]  = st.gearType;
@@ -125,10 +284,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
 
         if (st.kind == StageKind::Nam)
         {
-            auto controls = nlohmann::json::array();
+            auto controls = nlohmann::ordered_json::array();
             for (const auto& c : st.device.controls)
             {
-                nlohmann::json cj;
+                nlohmann::ordered_json cj;
                 cj["name"]   = c.name;
                 cj["role"]   = roleToString (c.role);
                 if (c.sweep > 0) cj["sweep"] = c.sweep;
@@ -138,12 +297,12 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             }
             if (! controls.empty()) sj["controls"] = std::move (controls);
 
-            auto files = nlohmann::json::array();
+            auto files = nlohmann::ordered_json::array();
             for (const auto& fe : st.device.files)
             {
-                nlohmann::json fj;
+                nlohmann::ordered_json fj;
                 fj["file"] = fe.id;
-                nlohmann::json s = nlohmann::json::object();
+                nlohmann::ordered_json s = nlohmann::ordered_json::object();
                 for (const auto& [k, v] : fe.settings) s[k] = v;
                 fj["settings"] = std::move (s);
                 if (fe.inputDb < -0.0005 || fe.inputDb > 0.0005)
@@ -157,7 +316,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             // knob, so a writer that emitted both would produce a pack nothing can load. `sections` wins
             // because it is the form a producer CHOSE: the ladder is what the bands were fitted to, and
             // a model still holding it beside the fit has not un-chosen anything.
-            auto tone = nlohmann::json::array();
+            auto tone = nlohmann::ordered_json::array();
             for (const auto& me : st.tone)
             {
                 if (me.name.empty() || (me.positions.empty() && me.sections.empty())) continue;
@@ -165,7 +324,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // …and a `sections` knob with no sweep is one the reader drops on sight (the travel law
                 // runs on rotation), so writing it would only make a pack that loses a knob in transit.
                 if (asSections && me.sweep <= 0) continue;
-                nlohmann::json mj;
+                nlohmann::ordered_json mj;
                 mj["name"] = me.name;
                 if (me.sweep > 0)            mj["sweep"]     = me.sweep;
                 if (! me.placement.empty())  mj["placement"] = me.placement;
@@ -177,7 +336,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 if (! me.defaultValue.empty()) mj["default"] = me.defaultValue;
                 if (! me.operatingPoint.empty())
                 {
-                    nlohmann::json op = nlohmann::json::object();
+                    nlohmann::ordered_json op = nlohmann::ordered_json::object();
                     for (const auto& [k, v] : me.operatingPoint) op[k] = v;
                     mj["operating_point"] = std::move (op);
                 }
@@ -186,7 +345,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // so a `sections` knob carries none.
                 if (! asSections && me.grid.points > 0)
                 {
-                    nlohmann::json g;
+                    nlohmann::ordered_json g;
                     g["f_lo"]   = me.grid.fLo;
                     g["f_hi"]   = me.grid.fHi;
                     g["points"] = me.grid.points;
@@ -199,7 +358,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // still ships, because "tested and failed everywhere" is a different statement.
                 if (me.trusted.levels >= 2)
                 {
-                    nlohmann::json t;
+                    nlohmann::ordered_json t;
                     t["lo_hz"]    = me.trusted.loHz;
                     t["hi_hz"]    = me.trusted.hiHz;
                     t["lo_index"] = me.trusted.loIndex;
@@ -210,14 +369,14 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 }
                 if (asSections)
                 {
-                    auto sections = nlohmann::json::array();
+                    auto sections = nlohmann::ordered_json::array();
                     for (const auto& sc : me.sections)
                     {
-                        nlohmann::json x;
+                        nlohmann::ordered_json x;
                         x["type"]     = sectionKindToString (sc.kind);
                         x["hz"]       = sc.hz;
                         x["q"]        = sc.q;
-                        x["range_db"] = nlohmann::json::array ({ sc.dbAtMin, sc.dbAtMax });
+                        x["range_db"] = nlohmann::ordered_json::array ({ sc.dbAtMin, sc.dbAtMax });
                         // Only a tilt hinges; writing a pivot on a shelf would invite a reader to apply it.
                         if (sc.kind == SectionKind::Tilt) x["pivot"] = sc.pivot;
                         // A travel is written as the pair at the two stops. A side the model left at 0
@@ -225,10 +384,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                         // in the pack's vocabulary, where an absent KEY means neither side moves and a
                         // present one must say both.
                         if (sc.hzAtMin > 0.0 || sc.hzAtMax > 0.0)
-                            x["hz_at"] = nlohmann::json::array ({ sc.hzAtMin > 0.0 ? sc.hzAtMin : sc.hz,
+                            x["hz_at"] = nlohmann::ordered_json::array ({ sc.hzAtMin > 0.0 ? sc.hzAtMin : sc.hz,
                                                                   sc.hzAtMax > 0.0 ? sc.hzAtMax : sc.hz });
                         if (sc.qAtMin > 0.0 || sc.qAtMax > 0.0)
-                            x["q_at"]  = nlohmann::json::array ({ sc.qAtMin > 0.0 ? sc.qAtMin : sc.q,
+                            x["q_at"]  = nlohmann::ordered_json::array ({ sc.qAtMin > 0.0 ? sc.qAtMin : sc.q,
                                                                   sc.qAtMax > 0.0 ? sc.qAtMax : sc.q });
                         sections.push_back (std::move (x));
                     }
@@ -236,10 +395,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 }
                 else
                 {
-                    auto positions = nlohmann::json::array();
+                    auto positions = nlohmann::ordered_json::array();
                     for (const auto& p : me.positions)
                     {
-                        nlohmann::json pj;
+                        nlohmann::ordered_json pj;
                         pj["value"]    = p.value;
                         if (! p.label.empty()) pj["label"] = p.label;
                         pj["norm"]     = p.norm;
@@ -253,11 +412,11 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             }
             if (! tone.empty()) sj["tone"] = std::move (tone);
 
-            auto blends = nlohmann::json::array();
+            auto blends = nlohmann::ordered_json::array();
             for (const auto& bl : st.blend)
             {
                 if (bl.name.empty()) continue;
-                nlohmann::json bj;
+                nlohmann::ordered_json bj;
                 bj["name"] = bl.name;
                 if (bl.sweep > 0)             bj["sweep"]     = bl.sweep;
                 if (! bl.reference.empty())   bj["reference"] = bl.reference;
@@ -268,13 +427,13 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 bj["polarity"] = bl.polarity;
                 if (! bl.operatingPoint.empty())
                 {
-                    nlohmann::json op = nlohmann::json::object();
+                    nlohmann::ordered_json op = nlohmann::ordered_json::object();
                     for (const auto& [k, v] : bl.operatingPoint) op[k] = v;
                     bj["operating_point"] = std::move (op);
                 }
                 if (bl.grid.points > 0)
                 {
-                    nlohmann::json g;
+                    nlohmann::ordered_json g;
                     g["f_lo"]   = bl.grid.fLo;
                     g["f_hi"]   = bl.grid.fHi;
                     g["points"] = bl.grid.points;
@@ -282,7 +441,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 }
                 if (bl.trusted.levels >= 2)   // …and the same for a blend
                 {
-                    nlohmann::json t;
+                    nlohmann::ordered_json t;
                     t["lo_hz"]    = bl.trusted.loHz;
                     t["hi_hz"]    = bl.trusted.hiHz;
                     t["lo_index"] = bl.trusted.loIndex;
@@ -293,10 +452,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 }
                 bj["dry"]          = bl.dryDb;
                 bj["dry_level_db"] = bl.dryLevelDb;
-                auto bp = nlohmann::json::array();
+                auto bp = nlohmann::ordered_json::array();
                 for (const auto& p : bl.positions)
                 {
-                    nlohmann::json pj;
+                    nlohmann::ordered_json pj;
                     pj["value"]  = p.value;
                     if (! p.label.empty()) pj["label"] = p.label;
                     pj["norm"]   = p.norm;
@@ -320,7 +479,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             if (! st.eq.showCurve)     sj["show_curve"] = false;   // default true — write only the override
             if (! st.eq.defaults.empty())
             {
-                nlohmann::json d = nlohmann::json::object();
+                nlohmann::ordered_json d = nlohmann::ordered_json::object();
                 for (const auto& [k, v] : st.eq.defaults) d[k] = v;
                 sj["defaults"] = std::move (d);
             }
@@ -329,7 +488,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
         chain.push_back (std::move (sj));
     }
     j["chain"] = std::move (chain);
-    return j.dump (indent) + "\n";
+    std::string out;
+    detail::emit (out, j, "", 0, indent > 0 ? indent : 2, 100);
+    out += '\n';
+    return out;
 }
 
 } // namespace namz::rig

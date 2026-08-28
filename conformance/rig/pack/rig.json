@@ -1,61 +1,19 @@
 {
+  "format": "orbitrig", "schema": 3,
+  "rig_id": "namz-golden-rig", "name": "Golden Amp", "modeled_by": "namz conformance",
   "chain": [
     {
+      "kind": "nam", "slot": "preamp",
+      "gear": { "make": "Darwin's Cat", "model": "Golden Amp", "type": "preamp" },
       "controls": [
-        {
-          "name": "channel",
-          "role": "channel",
-          "values": [
-            "green",
-            "red"
-          ]
-        },
-        {
-          "name": "gain",
-          "role": "gain",
-          "sweep": 300,
-          "values": [
-            "0",
-            "150",
-            "300"
-          ]
-        }
+        { "name": "channel", "role": "channel", "values": ["green", "red"] },
+        { "name": "gain", "role": "gain", "sweep": 300, "values": ["0", "150", "300"] }
       ],
       "files": [
-        {
-          "file": "m01.namz",
-          "settings": {
-            "channel": "red",
-            "gain": "0"
-          }
-        },
-        {
-          "file": "m02.namz",
-          "settings": {
-            "channel": "green",
-            "gain": "150"
-          }
-        },
-        {
-          "file": "m03.namz",
-          "settings": {
-            "channel": "green",
-            "gain": "0"
-          }
-        }
-      ],
-      "gear": {
-        "make": "Darwin's Cat",
-        "model": "Golden Amp",
-        "type": "preamp"
-      },
-      "kind": "nam",
-      "slot": "preamp"
+        { "file": "m01.namz", "settings": { "channel": "red", "gain": "0" } },
+        { "file": "m02.namz", "settings": { "channel": "green", "gain": "150" } },
+        { "file": "m03.namz", "settings": { "channel": "green", "gain": "0" } }
+      ]
     }
-  ],
-  "format": "orbitrig",
-  "modeled_by": "namz conformance",
-  "name": "Golden Amp",
-  "rig_id": "namz-golden-rig",
-  "schema": 3
+  ]
 }
