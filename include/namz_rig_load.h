@@ -189,6 +189,9 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         }
                     if (auto g = fj.find ("input_db"); g != fj.end() && g->is_number())
                         fe.inputDb = g->get<double>();
+                    // An integer, or nothing: a lag of 2.5 samples is not a reading this format speaks.
+                    if (auto l = fj.find ("lag_samples"); l != fj.end() && l->is_number_integer())
+                        fe.lagSamples = l->get<int>();
                     if (! fe.id.empty()) st.device.files.push_back (std::move (fe));
                 }
 

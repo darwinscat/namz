@@ -195,7 +195,19 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
   that meets a `kind` it doesn't know **skips that stage** rather than failing, so new stage types
   never break old players. `slot` (`pedal`/`preamp`/`amp`/`poweramp`/`rig`) routes the stage.
 - **`files`** — the authoritative list for a `nam` stage: each entry is a model + its `settings`.
-  (A manifest-less folder is read by scanning `*.namz` instead.)
+  (A manifest-less folder is read by scanning `*.namz` instead.) An entry may also carry:
+  - `input_db` — how much SOFTER the signal reaching this model is, dB (absent = 0). A device may
+    point two settings at one file — the bottom notches of a gain dial, where the hardware gives hiss
+    and little else, played through the neighbour above them with less going in. Into the model, not
+    out of it: less signal is also less drive, so the dial fades instead of falling into a hole. The
+    capture side decides this and writes it down; a player only applies it.
+  - `lag_samples` — how many samples LATER than the stage's first file this model's output arrives on
+    the same input, at the file's own sample rate — an integer, negative = earlier. Two captures of
+    one device come out of training a few samples apart, and a player that crossfades them as they are
+    combs. The capture side measures this once, with every model in hand, and writes it on every entry
+    it measured (the first file's own is 0); a player delays each model by the largest lag minus its
+    own, so any pair sums in phase. Absent = not measured: a player that crossfades must measure for
+    itself, and a stage where some entries carry it and some do not is not measured either.
 - **`tone`** — knobs that are NOT model axes: see below.
 - **`blend`** — dry/wet mix knobs, the third kind of control: see below.
 - **`eq` stage** — the tone stack is ALWAYS software; this stage is optional author guidance for the

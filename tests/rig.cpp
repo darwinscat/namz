@@ -517,6 +517,24 @@ int main()
         ok (! v && r.chain.empty(), "a string schema is refused too");
     }
 
+    // --- `lag_samples`: a reading or nothing, never a guess --------------------------------------
+    {
+        const std::string text = R"({"format":"orbitrig","schema":3,"chain":[{"kind":"nam","slot":"pedal",
+            "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","150"]}],
+            "files":[{"file":"a.namz","settings":{"gain":"0"}},
+                     {"file":"b.namz","settings":{"gain":"150"},"lag_samples":2.5},
+                     {"file":"c.namz","settings":{"gain":"150"},"lag_samples":4}]}]})";
+        const auto r = loadRigManifest (text);
+        ok (r.chain.size() == 1 && r.chain[0].device.files.size() == 3, "three files");
+        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 3)
+        {
+            const auto& f = r.chain[0].device.files;
+            ok (! f[0].lagSamples.has_value(), "no key = not measured, not zero");
+            ok (! f[1].lagSamples.has_value(), "2.5 samples is not a reading this format speaks: not read");
+            ok (f[2].lagSamples == 4, "an integer is the reading");
+        }
+    }
+
     // --- WRITER (namz_rig_write.h): load(write(rig)) == rig for every carried field -------------
     {
         Rig rig;
@@ -530,6 +548,8 @@ int main()
         nam.device.controls.back().sweep = 300;                       // the gain dial's rotation
         nam.device.files = { { "ReVolt-green-0.namz", { { "channel", "green" }, { "boost", "off" }, { "gain", "0" } } },
                              { "ReVolt-red-150.namz",   { { "channel", "red" },   { "boost", "off" }, { "gain", "150" } } } };
+        nam.device.files[0].lagSamples = 0;                           // the reference: measured, and zero
+        nam.device.files[1].lagSamples = -3;                          // three samples EARLIER than it
 
         Tone tone;                                                // a linear knob: DSP, not an axis
         tone.name = "tone"; tone.sweep = 300; tone.reference = "300";
@@ -585,6 +605,8 @@ int main()
             ok (n.device.files.size() == 2 && n.device.files[1].id == "ReVolt-red-150.namz"
                 && n.device.files[1].settings == nam.device.files[1].settings, "file index round-trips");
             ok (n.device.controls.back().sweep == 300, "the dial's sweep round-trips");
+            ok (n.device.files.size() == 2 && n.device.files[0].lagSamples == 0 && n.device.files[1].lagSamples == -3,
+                "each file's lag round-trips, the reference's zero included");
             ok (n.tone.size() == 2 && n.tone[0].name == "tone" && n.tone[0].sweep == 300
                 && n.tone[0].reference == "300" && n.tone[0].placement == "post"
                 && n.tone[0].operatingPoint.at ("gain") == "150",
