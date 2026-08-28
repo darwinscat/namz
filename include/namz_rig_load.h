@@ -235,7 +235,13 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         me.grid.fHi    = detail::jnum (*g, "f_hi", 20000.0);
                         me.grid.points = detail::jint (*g, "points");
                     }
-                    if (auto ps = mj.find ("positions"); ps != mj.end() && ps->is_array())
+                    // `positions`: a position IS its curve — `db`, exactly `grid.points` numbers. One with
+                    // no curve, or a curve of the wrong length (a non-number in it counts as a hole), is
+                    // unusable and SKIPPED, not padded and not truncated; a knob with no grid, or with
+                    // no position left after that, is dropped. NAMZ-FORMAT.md has said so since 2.0.0;
+                    // the loader let all of it through, and the reader downstream was left to discover a
+                    // short curve by indexing past it.
+                    if (auto ps = mj.find ("positions"); ps != mj.end() && ps->is_array() && me.grid.points > 0)
                         for (const auto& pj : *ps)
                         {
                             if (! pj.is_object()) continue;
@@ -247,7 +253,8 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             if (auto db = pj.find ("db"); db != pj.end() && db->is_array())
                                 for (const auto& v : *db)
                                     if (v.is_number()) p.db.push_back (v.get<double>());
-                            if (! p.value.empty()) me.positions.push_back (std::move (p));
+                            if (! p.value.empty() && (int) p.db.size() == me.grid.points)
+                                me.positions.push_back (std::move (p));
                         }
                     // `sections`: every band must be readable, or the KNOB is unusable — a band a reader
                     // cannot build (a `type` it does not know, no frequency, no `range_db`) is not skipped
