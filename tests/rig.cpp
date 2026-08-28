@@ -369,10 +369,32 @@ int main()
 
         // Junk entries are dropped, not half-loaded: no name / no positions = nothing to apply.
         const auto junk = loadRigManifest (R"({"format":"orbitrig","chain":[{"kind":"nam",
-            "tone":[{"sweep":300},{"name":"tone"},{"name":"ok","positions":[{"value":"0"}]}]}]})");
+            "tone":[{"sweep":300},{"name":"tone"},
+                    {"name":"ok","grid":{"points":1},"positions":[{"value":"0","db":[0.0]}]}]}]})");
         ok (junk.chain.size() == 1 && junk.chain[0].tone.size() == 1
             && junk.chain[0].tone[0].name == "ok", "nameless / empty tone entries dropped");
-        ok (junk.chain[0].tone[0].placement == "post", "placement defaults to post");
+        ok (junk.chain.size() == 1 && junk.chain[0].tone.size() == 1
+            && junk.chain[0].tone[0].placement == "post", "placement defaults to post");
+
+        // A position IS its curve: no `db`, a `db` of the wrong length, or one with a hole in it is
+        // skipped — not padded, not truncated — and a knob with no grid, or with nothing left, is
+        // dropped. Until now all of it loaded, and a reader found the short curve by indexing past it.
+        {
+            const auto r = loadRigManifest (R"({"format":"orbitrig","chain":[{"kind":"nam","tone":[
+                {"name":"nogrid","sweep":300,"reference":"300",
+                 "positions":[{"value":"0","db":[0,-6]},{"value":"300","db":[0,0]}]},
+                {"name":"short","sweep":300,"reference":"300","grid":{"points":3},
+                 "positions":[{"value":"0","db":[0,-6]},{"value":"150","db":[0,-3,-9]},{"value":"300"},
+                              {"value":"200","db":[0,"x",-4]},{"value":"250","db":[0,-1,-2,-3]}]},
+                {"name":"none","sweep":300,"reference":"300","grid":{"points":3},
+                 "positions":[{"value":"0","db":[0]}]}
+            ]}]})");
+            ok (r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].name == "short",
+                "a knob with no grid, and one with no usable position, are dropped");
+            ok (r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].positions.size() == 1
+                && r.chain[0].tone[0].positions[0].value == "150",
+                "short, missing, holed and overlong curves are skipped; the exact one stays");
+        }
     }
 
     // --- TONE, the second form: `sections` — the knob as bands, ONE form per knob -----------------
