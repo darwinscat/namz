@@ -682,6 +682,66 @@ int main()
         ok (text.find ("switchy") == std::string::npos, "the sweepless knob left no trace");
     }
 
+    // WRITER: rig.json is laid out for a reader with eyes — key order as the format lists it, leaf
+    // objects on one line, long arrays wrapped under their first element. Pinned here because a
+    // generic pretty-printer produces valid JSON that nobody can read, and nothing else would notice
+    // it coming back. A READER must not depend on any of this: it parses JSON.
+    {
+        Rig rig;
+        rig.rigId = "dc-guitar-butler"; rig.name = "Guitar Butler Clean"; rig.modeledBy = "Darwin's Cat";
+        Stage st;
+        st.kind = StageKind::Nam; st.rawKind = "nam"; st.slot = "pedal";
+        Control gain;
+        gain.name = "Gain"; gain.role = Role::Gain; gain.sweep = 300;
+        for (int d = 0; d <= 300; d += 15) gain.values.push_back (std::to_string (d));
+        st.device.controls = { gain };
+        st.device.files = { { "Guitar Butler Dirty-0002.namz", { { "Gain", "45" } } } };
+        Tone bass;
+        bass.name = "bass"; bass.sweep = 300; bass.reference = "150";
+        bass.sections = { { SectionKind::LowShelf, 167.0, 0.58, -12.0, 6.0, 0.5, 120.0, 240.0, 0.5, 0.7 } };
+        Tone tone;
+        tone.name = "tone"; tone.sweep = 300; tone.reference = "300"; tone.grid.points = 8;
+        tone.positions = { { "0", {}, 0.0, -5.15, { -0.2, -0.2, -0.4, -0.9, -3.2, -9.4, -16.8, -24.1 } } };
+        st.tone = { bass, tone };
+        rig.chain = { st };
+        const auto text = writeManifest (rig);
+
+        auto line = [&text] (int n) {       // the n-th line of the manifest, 0-based
+            std::size_t from = 0;
+            for (int i = 0; i < n; ++i) { from = text.find ('\n', from); if (from == std::string::npos) return std::string(); ++from; }
+            const auto to = text.find ('\n', from);
+            return text.substr (from, to == std::string::npos ? std::string::npos : to - from);
+        };
+        ok (line (0) == "{" && line (1) == "  \"format\": \"orbitrig\", \"schema\": " + std::to_string (kRigSchema) + ",",
+            "format and schema open the manifest, on one line");
+        ok (line (2) == "  \"rig_id\": \"dc-guitar-butler\", \"name\": \"Guitar Butler Clean\", \"modeled_by\": \"Darwin's Cat\",",
+            "the identity shares the next line");
+        ok (text.find ("\"kind\": \"nam\", \"slot\": \"pedal\",\n") != std::string::npos, "a stage opens with kind and slot");
+        ok (text.find ("        { \"name\": \"Gain\", \"role\": \"gain\", \"sweep\": 300,\n"
+                       "          \"values\": [\"0\", \"15\", ") != std::string::npos,
+            "a control is one line, and a long array of values breaks before the array");
+        ok (text.find ("\n                     \"180\", \"195\",") != std::string::npos,
+            "…and wraps inside, aligned under its first element");
+        ok (text.find ("        { \"file\": \"Guitar Butler Dirty-0002.namz\", \"settings\": { \"Gain\": \"45\" } }") != std::string::npos,
+            "a file entry is one line, its settings inline");
+        ok (text.find ("          \"name\": \"bass\", \"sweep\": 300, \"placement\": \"post\",\n"
+                       "          \"reference\": \"150\",\n") != std::string::npos,
+            "a knob's identity is two lines: name / sweep / placement, then reference (and default)");
+        ok (text.find ("            { \"type\": \"low_shelf\", \"hz\": 167.0, \"q\": 0.58, \"range_db\": [-12.0, 6.0],\n"
+                       "              \"hz_at\": [120.0, 240.0], \"q_at\": [0.5, 0.7] }") != std::string::npos,
+            "a band is one line, type first, broken before a member rather than inside an array");
+        ok (text.find ("            { \"value\": \"0\", \"norm\": 0.0, \"level_db\": -5.15,\n"
+                       "              \"db\": [-0.2, -0.2, -0.4, -0.9, -3.2, -9.4, -16.8, -24.1] }") != std::string::npos,
+            "a position is one line with its curve inline, broken before `db`");
+        ok (text.find ("\"type\"") < text.find ("\"hz\"") && text.find ("\"format\"") < text.find ("\"chain\""),
+            "keys come in the format's order, not the alphabet's");
+        bool valid = false;
+        const auto back = loadRigManifest (text, &valid);
+        ok (valid && back.chain.size() == 1 && back.chain[0].tone.size() == 2
+            && back.chain[0].device.controls.size() == 1 && back.chain[0].device.controls[0].values.size() == 21,
+            "…and it is the same JSON: the reader takes it back whole");
+    }
+
     // WRITER: a boosted file stamps boost=true; a rig with no boost control stamps no boost key.
     {
         Rig rig;

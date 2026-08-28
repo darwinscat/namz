@@ -150,6 +150,11 @@ ReVolt Guitar.orbitrig/            (share as ReVolt Guitar.orbitrig.zip)
 `settings.*`/`controls`/`rig_id`/`slot` header, so a single file pulled out of the pack still knows
 what it is (a player with no manifest falls back to scanning `.namz` + reading those headers).
 
+The reference writer lays the manifest out the way the example below is laid out — keys in the order
+this document lists them, a control, a file entry, a band or a position on one line, long arrays
+wrapped under their first element — so a person can read a pack without a tool. That is a courtesy
+of the writer, not a rule of the format: a reader parses JSON and must not depend on a line.
+
 ```json
 {
   "format": "orbitrig", "schema": 3,
