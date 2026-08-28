@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -203,6 +204,15 @@ struct FileEntry
     // out of it: less signal is also less drive, so the dial fades instead of falling into a hole.
     // The capture side decides this and writes it down; a player only applies it.
     double inputDb = 0.0;
+    // HOW MANY SAMPLES LATER than the stage's first file this model's output arrives on the same input,
+    // at the file's own sample rate; negative = earlier. Two captures of one device come out of training
+    // a few samples apart, and a player that crossfades them as they are combs. The capture side measures
+    // this once, with every model in hand (half a second of broadband through each, a cross-correlation
+    // against the first), and writes it on every entry it measured — the first file's own is 0. A player
+    // delays each model by the largest lag minus its own, so any pair sums in phase. Not stated = not
+    // measured: a player that crossfades must measure for itself, and a stage where some entries carry
+    // it and some do not is not measured either.
+    std::optional<int> lagSamples;
 };
 
 struct Device

@@ -307,6 +307,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 fj["settings"] = std::move (s);
                 if (fe.inputDb < -0.0005 || fe.inputDb > 0.0005)
                     fj["input_db"] = std::round (fe.inputDb * 100.0) / 100.0;
+                if (fe.lagSamples) fj["lag_samples"] = *fe.lagSamples;   // 0 is a reading; absent is none
                 files.push_back (std::move (fj));
             }
             if (! files.empty()) sj["files"] = std::move (files);

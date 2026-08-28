@@ -6,6 +6,18 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [3.1.0] — 2026-08-28 — a file says how late it is
+
+### Added
+- **`lag_samples` on a file entry** — how many samples later than the stage's first file this model's
+  output arrives, measured once by the capture side with every model in hand. A player that crossfades
+  neighbouring captures delays each by the largest lag minus its own, so the pair sums in phase instead
+  of combing; until now every player had to push half a second of broadband through every model at
+  load to learn a number the packer already knew. Additive: `schema` stays 3, an absent key means
+  "not measured", a non-integer is not read, and a reader that does not know the key plays as before.
+- `input_db` is documented in NAMZ-FORMAT.md beside it — it had lived only in this changelog.
+- **`NAMZ_VERSION` is 3.1.0**, and so is the CMake project.
+
 ## [3.0.0] — 2026-08-28 — `tone`, and a knob as bands
 
 ### Changed
