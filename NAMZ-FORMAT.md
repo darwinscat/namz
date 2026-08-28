@@ -165,7 +165,7 @@ what it is (a player with no manifest falls back to scanning `.namz` + reading t
         { "name": "tone", "sweep": 300, "placement": "post", "reference": "300",
           "operating_point": { "gain": "150" },
           "grid": { "f_lo": 20.0, "f_hi": 20000.0, "points": 8 },
-          "trusted": { "lo_hz": 60.0, "hi_hz": 4600.0, "span_db": 24.0, "levels": 5 },
+          "trusted": { "lo_hz": 53.7, "hi_hz": 7455.2, "lo_index": 1, "hi_index": 6, "span_db": 24.0, "levels": 5 },
           "positions": [
             { "value": "0",   "norm": 0.0, "db": [-0.2, -0.2, -0.4, -0.9, -3.2, -9.4, -16.8, -24.1] },
             { "value": "300", "norm": 1.0, "db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }
@@ -235,7 +235,7 @@ invalid manifest: that knob is skipped and the reference position plays.
 | `default` | where a player starts the knob. Absent: start at `reference` |
 | `operating_point` | the capture axes held while sweeping — provenance, and the honest limit of the measurement |
 | `grid` | `positions` only: the log-spaced frequency grid `db` is sampled on. **Endpoints inclusive**: `f[i] = f_lo · (f_hi/f_lo)^(i / (points − 1))`, so `f[0]` is exactly `f_lo` and `f[points − 1]` exactly `f_hi`. The band-centre convention some analysers use would move the top of an 8-point 20 Hz – 20 kHz grid from 20 kHz to 13 kHz, and every reading with it |
-| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels`. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at. With `sections` it is provenance — where the ladder the bands were fitted to held — and nothing to apply: a band is one filter, played whole |
+| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels` — and the SAME band as grid indices, `lo_index`, `hi_index`, which are the authority: the hold rule is applied on the grid, and two readers rounding Hz to an index differently pick neighbouring points, decibels apart on a 30 dB tilt, so the producer says which points it meant. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` — and `lo_index > hi_index`, the same statement in indices — with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at. With `sections` it is provenance — where the ladder the bands were fitted to held — and nothing to apply: a band is one filter, played whole |
 | `positions[]` | the measured ladder: per swept position, in dial order — see below |
 | `sections[]` | the knob as bands, applied in series — see below. Magnitude-only filters, so their order is immaterial |
 
