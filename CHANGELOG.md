@@ -33,6 +33,10 @@ carries its own version.
   on one knob, every way a band can be unreadable, and the sections round trip.
 
 ### Fixed
+- A `positions` knob loads only what it can play: a position without `db`, or with a `db` that is not
+  exactly `grid.points` numbers, is skipped, and a knob with no grid or no position left is dropped —
+  what NAMZ-FORMAT.md has said since 2.0.0 and what the loader did not do. A reader downstream no
+  longer discovers a short curve by indexing past it.
 - The `rig-measured` golden pack carried `trusted.lo_index` / `hi_index` of 0 / 0 and `level_db` of
   0.0 on every position while `expected.json` stated 1 / 6 and real levels: the regeneration recipe
   never copied them and the check never compared them. Both do now, and the pack says what the fixture
