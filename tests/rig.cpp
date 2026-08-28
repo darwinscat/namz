@@ -2,7 +2,8 @@
 // namz_rig self-tests: controls-spec roundtrip, meta-driven + filename-token device building,
 // defaults (mid-sweep gain / boost off), the selection policy (pin the turned control, keep the
 // rest, fall back toward defaults; settings snap to the chosen file's real combination), and the
-// measured (linear-knob) block. Knob positions are DEGREES throughout — the clock grammar is gone.
+// tone (linear-knob) block in both its forms, and the schema gate. Knob positions are DEGREES
+// throughout — the clock grammar is gone.
 
 #include "../include/namz_rig.h"
 #include "../include/namz_rig_load.h"
@@ -304,12 +305,12 @@ int main()
         ok (rig.chain[0].irFiles.size() == 2, "ir files carried");
     }
 
-    // --- MEASURED controls: a linear knob shipped as DSP, never as a selection axis ---------------
+    // --- TONE controls: a linear knob shipped as DSP, never as a selection axis -------------------
     {
         const std::string withTone = R"({"format":"orbitrig","chain":[
             {"kind":"nam","slot":"pedal",
              "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","150","300"]}],
-             "measured":[{"name":"tone","sweep":300,"placement":"post","reference":"300",
+             "tone":[{"name":"tone","sweep":300,"placement":"post","reference":"300",
                           "operating_point":{"gain":"150"},
                           "grid":{"f_lo":20,"f_hi":20000,"points":4},
                           "trusted":{"lo_hz":40,"hi_hz":9000,"span_db":24,"levels":8},
@@ -324,10 +325,10 @@ int main()
                                     {"value":"300","norm":1.0,"dry_db":-120.0,"wet_db":0.0}]}],
              "files":[{"file":"a.namz","settings":{"gain":"0"}}]}]})";
         const auto rig = loadRigManifest (withTone);
-        ok (rig.chain.size() == 1 && rig.chain[0].measured.size() == 1, "measured block parsed");
-        const auto& me = rig.chain[0].measured.front();
+        ok (rig.chain.size() == 1 && rig.chain[0].tone.size() == 1, "tone block parsed");
+        const auto& me = rig.chain[0].tone.front();
         ok (me.name == "tone" && me.sweep == 300 && me.placement == "post" && me.reference == "300",
-            "measured identity: name / sweep / placement / reference");
+            "tone identity: name / sweep / placement / reference");
         ok (me.operatingPoint.at ("gain") == "150", "the operating point held while sweeping is carried");
         ok (me.grid.points == 4 && me.grid.fLo == 20.0 && me.grid.fHi == 20000.0, "curve grid parsed");
         ok (me.trusted.loHz == 40.0 && me.trusted.hiHz == 9000.0 && me.trusted.spanDb == 24.0
@@ -336,9 +337,9 @@ int main()
         ok (me.positions.size() == 2 && me.positions[0].value == "0" && me.positions[0].norm == 0.0,
             "positions parse in the control's own order");
         ok (me.positions[0].db.size() == 4 && me.positions[0].db[3] == -18.0,
-            "the measured curve is carried — and it is the ONLY description of the control");
+            "the measured ladder is carried — with `positions`, it is the whole description of the control");
 
-        // A blend is the THIRD kind of control: not a filter (so not `measured`) and not an axis (so not
+        // A blend is the THIRD kind of control: not a filter (so not a `tone`) and not an axis (so not
         // in `controls`). What a reader needs is the dry path's response and the two gains per position.
         ok (rig.chain[0].blend.size() == 1, "the blend block parsed");
         if (rig.chain[0].blend.size() == 1)
@@ -359,19 +360,139 @@ int main()
                 "the ends are silent on one side each");
         }
 
-        // FALSIFICATION: the measured knob must NOT become a selection control. No file carries it in
+        // FALSIFICATION: the tone knob must NOT become a selection control. No file carries it in
         // `settings`, so a dial built from it would pin a value resolve() can never satisfy — the
         // player would show a knob that refuses every turn.
         ok (rig.chain[0].device.controls.size() == 1
             && rig.chain[0].device.controls[0].name == "gain",
-            "measured is NOT a selection control (the axes stay what the files carry)");
+            "tone is NOT a selection control (the axes stay what the files carry)");
 
         // Junk entries are dropped, not half-loaded: no name / no positions = nothing to apply.
         const auto junk = loadRigManifest (R"({"format":"orbitrig","chain":[{"kind":"nam",
-            "measured":[{"sweep":300},{"name":"tone"},{"name":"ok","positions":[{"value":"0"}]}]}]})");
-        ok (junk.chain.size() == 1 && junk.chain[0].measured.size() == 1
-            && junk.chain[0].measured[0].name == "ok", "nameless / empty measured entries dropped");
-        ok (junk.chain[0].measured[0].placement == "post", "placement defaults to post");
+            "tone":[{"sweep":300},{"name":"tone"},{"name":"ok","positions":[{"value":"0"}]}]}]})");
+        ok (junk.chain.size() == 1 && junk.chain[0].tone.size() == 1
+            && junk.chain[0].tone[0].name == "ok", "nameless / empty tone entries dropped");
+        ok (junk.chain[0].tone[0].placement == "post", "placement defaults to post");
+    }
+
+    // --- TONE, the second form: `sections` — the knob as bands, ONE form per knob -----------------
+    {
+        auto manifestWith = [] (const std::string& toneJson) {
+            return std::string (R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"pedal",
+                "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","300"]}],
+                "files":[{"file":"a.namz","settings":{"gain":"0"}}],
+                "tone":[)") + toneJson + "]}]}";
+        };
+        const std::string bass = R"({"name":"bass","sweep":300,"placement":"post","reference":"150",
+            "operating_point":{"gain":"150"},
+            "sections":[{"type":"low_shelf","hz":167,"q":0.58,"range_db":[-12.0,6.0],"hz_at":[120,240],"q_at":[0.5,0.7]},
+                        {"type":"tilt","hz":1077,"q":0.65,"pivot":0.35,"range_db":[-3.0,1.5]},
+                        {"type":"bell","hz":800,"q":1.2,"range_db":[-2.0,2.0],"pivot":"junk"},
+                        {"type":"high_shelf","hz":3000,"q":0.7,"range_db":[0.0,4.0],"hz_at":[3000,2200]}]})";
+        bool valid = false;
+        const auto rig = loadRigManifest (manifestWith (bass), &valid);
+        ok (valid && rig.chain.size() == 1 && rig.chain[0].tone.size() == 1, "a sections knob parses");
+        if (rig.chain.size() == 1 && rig.chain[0].tone.size() == 1)
+        {
+            const auto& t = rig.chain[0].tone[0];
+            ok (t.name == "bass" && t.sweep == 300 && t.reference == "150" && t.positions.empty()
+                && t.grid.points == 0, "identity, and no ladder beside the bands");
+            ok (t.sections.size() == 4, "every band read");
+            if (t.sections.size() == 4)
+            {
+                const auto& ls = t.sections[0];
+                ok (ls.kind == SectionKind::LowShelf && ls.hz == 167.0 && ls.q == 0.58,
+                    "low shelf: kind, and hz / q at the reference");
+                ok (ls.dbAtMin == -12.0 && ls.dbAtMax == 6.0, "range_db: SIGNED, the minus stop first");
+                ok (ls.hzAtMin == 120.0 && ls.hzAtMax == 240.0 && ls.qAtMin == 0.5 && ls.qAtMax == 0.7,
+                    "the travel pair, both sides, in position order");
+                ok (ls.pivot == 0.5, "a shelf's pivot is never touched");
+                const auto& tl = t.sections[1];
+                ok (tl.kind == SectionKind::Tilt && tl.pivot == 0.35, "a tilt's hinge is read as fitted, not assumed");
+                ok (tl.hzAtMin == 0.0 && tl.hzAtMax == 0.0 && tl.qAtMin == 0.0 && tl.qAtMax == 0.0,
+                    "no travel key = does not move, 0 in the model");
+                ok (t.sections[2].kind == SectionKind::Bell && t.sections[2].pivot == 0.5,
+                    "a stray `pivot` on a bell is not read — the band survives it");
+                ok (t.sections[3].hzAtMin == 0.0 && t.sections[3].hzAtMax == 2200.0,
+                    "a side spelled as the reference value reads back as 0: one spelling for `does not move`");
+            }
+        }
+
+        // A tilt without `pivot` is the symmetric seesaw.
+        {
+            const auto r = loadRigManifest (manifestWith (R"({"name":"t","sweep":300,"reference":"0",
+                "sections":[{"type":"tilt","hz":1000,"q":0.7,"range_db":[0.0,6.0]}]})"));
+            ok (r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].sections.size() == 1
+                && r.chain[0].tone[0].sections[0].pivot == 0.5, "a tilt without pivot hinges at 0.5");
+        }
+
+        // ONE FORM PER KNOB: both keys on one knob is an invalid manifest — refused whole, ok=false —
+        // even when one of them is empty. Presence is the offence.
+        {
+            const std::string bothForms = R"({"name":"x","sweep":300,"reference":"300",
+                "positions":[],"sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]}]})";
+            bool okBoth = true;
+            const auto r = loadRigManifest (manifestWith (bothForms), &okBoth);
+            ok (! okBoth && r.chain.empty(), "both forms on one knob: the manifest is refused whole");
+            // …and through loadRig that is the headers-only fallback, exactly as for a schema this
+            // reader does not speak — the existing contract, not a third behaviour.
+            FileMeta f; f.id = "a.namz"; f.filenameBase = "a";
+            f.meta = { { "controls", "gain:gain=0|300" }, { "settings.gain", "0" }, { "rig_id", "x" } };
+            const auto fb = loadRig (manifestWith (bothForms), { f });
+            ok (fb.chain.size() == 1 && fb.chain[0].tone.empty() && fb.chain[0].device.files.size() == 1,
+                "loadRig falls back to the headers: a device with no tone knobs");
+        }
+
+        // A knob this reader cannot build is DROPPED — the manifest stays valid, the knob plays flat.
+        auto dropped = [&] (const char* toneJson, const char* why) {
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (toneJson), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.empty(), why);
+        };
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[{"type":"notch","hz":800,"q":1,"range_db":[-1,1]}]})",
+                 "unknown band type: the whole knob is skipped, not just the band");
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]},{"type":"bell","hz":900,"q":1}]})",
+                 "a band without range_db spoils the knob, the readable bands before it included");
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[{"type":"bell","hz":0,"q":1,"range_db":[-1,1]}]})",
+                 "a band with no frequency: unusable");
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1],"hz_at":[0,900]}]})",
+                 "a 0 in hz_at is not a frequency: unusable");
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1],"q_at":[1]}]})",
+                 "a travel pair that is not a pair: unusable");
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[{"type":"tilt","hz":800,"q":1,"range_db":[-1,1],"pivot":"half"}]})",
+                 "a tilt whose pivot is not a number: unusable");
+        dropped (R"({"name":"x","reference":"0","sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]}]})",
+                 "sections without a sweep: the travel law has nothing to run on");
+        dropped (R"({"name":"x","sweep":300,"reference":"noon","sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]}]})",
+                 "a reference that is not a position on the dial: unusable");
+        dropped (R"({"name":"x","sweep":300,"reference":"301","sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]}]})",
+                 "a reference past the sweep: unusable");
+        dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[]})",
+                 "an empty sections array is a knob with neither form: dropped");
+    }
+
+    // --- THE SCHEMA GATE — written with the format, read by nobody, tested for the first time here --
+    {
+        auto withSchema = [] (const std::string& schema) {
+            return std::string (R"({"format":"orbitrig","schema":)") + schema + R"(,"chain":[{"kind":"nam"}]})";
+        };
+        bool v = false;
+        auto r = loadRigManifest (withSchema (std::to_string (kRigSchema)), &v);
+        ok (v && r.chain.size() == 1, "this reader's own schema loads");
+        v = true;
+        r = loadRigManifest (withSchema (std::to_string (kRigSchema + 1)), &v);   // never a literal: must not rot
+        ok (! v && r.chain.empty(), "a schema one above this reader's is refused, whole");
+        v = false;
+        r = loadRigManifest (withSchema ("1"), &v);
+        ok (v && r.chain.size() == 1, "an older schema still loads: its keys are a subset");
+        // Not an integer is not a number this reader may judge. `jint` used to answer 1 for these two,
+        // which walked a pack of unknown vintage through the gate as the oldest one there is.
+        v = true;
+        r = loadRigManifest (withSchema (std::to_string (kRigSchema + 1) + ".0"), &v);
+        ok (! v && r.chain.empty(), "a float schema is refused, not read as the oldest vintage");
+        v = true;
+        r = loadRigManifest (withSchema ("\"4\""), &v);
+        ok (! v && r.chain.empty(), "a string schema is refused too");
     }
 
     // --- WRITER (namz_rig_write.h): load(write(rig)) == rig for every carried field -------------
@@ -388,14 +509,20 @@ int main()
         nam.device.files = { { "ReVolt-green-0.namz", { { "channel", "green" }, { "boost", "off" }, { "gain", "0" } } },
                              { "ReVolt-red-150.namz",   { { "channel", "red" },   { "boost", "off" }, { "gain", "150" } } } };
 
-        Measured tone;                                                // a linear knob: DSP, not an axis
+        Tone tone;                                                // a linear knob: DSP, not an axis
         tone.name = "tone"; tone.sweep = 300; tone.reference = "300";
         tone.operatingPoint = { { "gain", "150" } };
         tone.grid.points = 3;
         tone.trusted = { 40.0, 9000.0, 0, 0, 24.0, 8 };
         tone.positions = { { "0",   {}, 0.0, 0.0, { 0.0, -6.0, -18.0 } },
                            { "300", {}, 1.0, 0.0, { 0.0,  0.0,   0.0 } } };
-        nam.measured = { tone };
+
+        Tone bass;                                                    // the same kind of knob, as bands
+        bass.name = "bass"; bass.sweep = 300; bass.reference = "150";
+        //                kind                   hz     q     dbMin  dbMax pivot hzMin hzMax  qMin qMax
+        bass.sections = { { SectionKind::LowShelf, 167.0, 0.58, -12.0, 6.0, 0.5, 0.0, 240.0, 0.5, 0.0 },
+                          { SectionKind::Tilt,     1077.0, 0.65, -3.0,  1.5, 0.35 } };
+        nam.tone = { tone, bass };
 
         Blend mix;                                                    // the third kind of control
         mix.name = "blend"; mix.sweep = 300; mix.reference = "300"; mix.dryEnd = "0";
@@ -436,16 +563,36 @@ int main()
             ok (n.device.files.size() == 2 && n.device.files[1].id == "ReVolt-red-150.namz"
                 && n.device.files[1].settings == nam.device.files[1].settings, "file index round-trips");
             ok (n.device.controls.back().sweep == 300, "the dial's sweep round-trips");
-            ok (n.measured.size() == 1 && n.measured[0].name == "tone" && n.measured[0].sweep == 300
-                && n.measured[0].reference == "300" && n.measured[0].placement == "post"
-                && n.measured[0].operatingPoint.at ("gain") == "150",
-                "measured identity round-trips");
-            ok (n.measured.size() == 1 && n.measured[0].positions.size() == 2
-                && n.measured[0].positions[0].db == std::vector<double> { 0.0, -6.0, -18.0 }
-                && n.measured[0].grid.points == 3
-                && n.measured[0].trusted.hiHz == 9000.0 && n.measured[0].trusted.spanDb == 24.0
-                && n.measured[0].trusted.levels == 8,
-                "the measured curve round-trips, grid and trusted band and all");
+            ok (n.tone.size() == 2 && n.tone[0].name == "tone" && n.tone[0].sweep == 300
+                && n.tone[0].reference == "300" && n.tone[0].placement == "post"
+                && n.tone[0].operatingPoint.at ("gain") == "150",
+                "tone identity round-trips");
+            ok (n.tone.size() == 2 && n.tone[0].positions.size() == 2
+                && n.tone[0].positions[0].db == std::vector<double> { 0.0, -6.0, -18.0 }
+                && n.tone[0].grid.points == 3
+                && n.tone[0].trusted.hiHz == 9000.0 && n.tone[0].trusted.spanDb == 24.0
+                && n.tone[0].trusted.levels == 8,
+                "the ladder round-trips, grid and trusted band and all");
+            ok (n.tone.size() == 2 && n.tone[1].name == "bass" && n.tone[1].positions.empty()
+                && n.tone[1].grid.points == 0 && n.tone[1].sections.size() == 2,
+                "the sections knob round-trips as sections only: no ladder, no grid");
+            if (n.tone.size() == 2 && n.tone[1].sections.size() == 2)
+            {
+                const auto& ls = n.tone[1].sections[0];
+                ok (ls.kind == SectionKind::LowShelf && ls.hz == 167.0 && ls.q == 0.58
+                    && ls.dbAtMin == -12.0 && ls.dbAtMax == 6.0, "a band's kind and signed range round-trip");
+                // One-sided travel: the model said 0 on one side, the pack spells that as the reference
+                // value, and the loader spells it back as 0 — field-exact, not merely equivalent.
+                ok (ls.hzAtMin == 0.0 && ls.hzAtMax == 240.0 && ls.qAtMin == 0.5 && ls.qAtMax == 0.0,
+                    "one-sided travel round-trips field-exact through the reference-value spelling");
+                ok (n.tone[1].sections[1].kind == SectionKind::Tilt && n.tone[1].sections[1].pivot == 0.35,
+                    "a tilt's fitted hinge round-trips");
+            }
+            const auto text = writeManifest (rig);
+            ok (text.find ("\"measured\"") == std::string::npos && text.find ("\"tone\"") != std::string::npos,
+                "the key is `tone`; `measured` is gone");
+            ok (text.find ("\"schema\": " + std::to_string (kRigSchema)) != std::string::npos,
+                "the writer spells the schema from the constant");
             ok (n.blend.size() == 1 && n.blend[0].polarity == -1 && n.blend[0].law == "equal_power"
                 && n.blend[0].dryEnd == "0" && n.blend[0].dryDb == std::vector<double> { 0.0, -2.0, -12.0 }
                 && n.blend[0].dryLevelDb == -4.5
@@ -484,6 +631,33 @@ int main()
         Settings s = devs[0].files[0].settings;
         const auto* hit = resolve (devs[0], s, "gain", "150");
         ok (hit != nullptr && hit->id == "ReVolt-red-150.namz", "selection works over stamped meta");
+    }
+
+    // WRITER: one form per knob, and a knob the reader would drop on sight is not written at all.
+    {
+        Rig rig;
+        Stage st;
+        st.kind = StageKind::Nam; st.rawKind = "nam";
+        Tone both;                                                    // a model holding BOTH forms
+        both.name = "both"; both.sweep = 300; both.reference = "300";
+        both.grid.points = 2;
+        both.positions = { { "0", {}, 0.0, 0.0, { 0.0, -6.0 } }, { "300", {}, 1.0, 0.0, { 0.0, 0.0 } } };
+        both.sections  = { { SectionKind::Bell, 800.0, 1.0, -2.0, 2.0 } };
+        Tone noSweep;                                                 // bands on a switch
+        noSweep.name = "switchy"; noSweep.reference = "0";
+        noSweep.sections = { { SectionKind::Bell, 800.0, 1.0, -2.0, 2.0 } };
+        st.tone = { both, noSweep };
+        rig.chain = { st };
+        const auto text = writeManifest (rig);
+        bool v = false;
+        const auto back = loadRigManifest (text, &v);
+        ok (v && back.chain.size() == 1 && back.chain[0].tone.size() == 1,
+            "both forms in the model → ONE in the pack (two would be refused); the sweepless knob is not written");
+        ok (back.chain.size() == 1 && back.chain[0].tone.size() == 1
+            && back.chain[0].tone[0].name == "both" && back.chain[0].tone[0].sections.size() == 1
+            && back.chain[0].tone[0].positions.empty() && back.chain[0].tone[0].grid.points == 0,
+            "…and the form written is `sections`, without the ladder's grid");
+        ok (text.find ("switchy") == std::string::npos, "the sweepless knob left no trace");
     }
 
     // WRITER: a boosted file stamps boost=true; a rig with no boost control stamps no boost key.

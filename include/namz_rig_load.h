@@ -46,6 +46,56 @@ namespace detail
         if (auto it = j.find (key); it != j.end() && it->is_number_integer()) return it->get<int>();
         return dflt;
     }
+    // A pair of numbers under `key` — `range_db`, `hz_at`, `q_at`. Absent → false with `a`/`b` untouched;
+    // present but not two numbers → also false, and the caller decides whether that spoils the band.
+    inline bool jpair (const nlohmann::json& j, const char* key, double& a, double& b)
+    {
+        const auto it = j.find (key);
+        if (it == j.end() || ! it->is_array() || it->size() != 2
+            || ! (*it)[0].is_number() || ! (*it)[1].is_number()) return false;
+        a = (*it)[0].get<double>();
+        b = (*it)[1].get<double>();
+        return true;
+    }
+
+    // One band of a `sections` knob. false = not a band this reader can build: unknown `type`, no
+    // positive `hz`/`q`, or no `range_db` pair. A malformed OPTIONAL key (`hz_at`, `q_at`, a tilt's
+    // `pivot`) is a stated quantity the reader cannot read — that spoils the band too, rather than
+    // silently freezing something the producer said moves.
+    inline bool readSection (const nlohmann::json& j, Section& out)
+    {
+        if (! sectionKindFrom (jstr (j, "type"), out.kind)) return false;
+        out.hz = jnum (j, "hz");
+        out.q  = jnum (j, "q");
+        if (! (out.hz > 0.0) || ! (out.q > 0.0)) return false;
+        if (! jpair (j, "range_db", out.dbAtMin, out.dbAtMax)) return false;
+        // Only a tilt hinges. On any other kind the key is not read — not "read and ignored", and not
+        // "read and refused": a bell with a stray `pivot` is a bell.
+        if (out.kind == SectionKind::Tilt)
+            if (auto p = j.find ("pivot"); p != j.end())
+            {
+                if (! p->is_number()) return false;
+                out.pivot = p->get<double>();          // stored as written; the formula clamps when applied
+            }
+        // The pair at the stops: strictly positive, because a 0 is not a frequency and not a Q. A side
+        // equal to the reference value is a side that does not move, which the model spells as 0 — so it
+        // is normalised to 0 here, and what the writer spelled out reads back as what it was given.
+        if (j.contains ("hz_at"))
+        {
+            if (! jpair (j, "hz_at", out.hzAtMin, out.hzAtMax)
+                || ! (out.hzAtMin > 0.0) || ! (out.hzAtMax > 0.0)) return false;
+            if (out.hzAtMin == out.hz) out.hzAtMin = 0.0;
+            if (out.hzAtMax == out.hz) out.hzAtMax = 0.0;
+        }
+        if (j.contains ("q_at"))
+        {
+            if (! jpair (j, "q_at", out.qAtMin, out.qAtMax)
+                || ! (out.qAtMin > 0.0) || ! (out.qAtMax > 0.0)) return false;
+            if (out.qAtMin == out.q) out.qAtMin = 0.0;
+            if (out.qAtMax == out.q) out.qAtMax = 0.0;
+        }
+        return true;
+    }
 } // namespace detail
 
 // Parse rig.json. `ok` (when given) reports whether the text WAS a valid orbitrig manifest (valid
@@ -65,7 +115,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
     // pack into a schema-1 reader is exactly the "everything parsed, nothing complained, the result was
     // confidently wrong" failure the format's removal policy exists to prevent, and until this was
     // checked the field was decoration.
-    if (detail::jint (j, "schema", 1) > kRigSchema) return rig;
+    // …and a `schema` that is not an integer is refused too: `jint` used to answer 1 for `4.0` or `"4"`,
+    // which let a pack this reader cannot judge through the gate as the oldest vintage there is.
+    if (auto s = j.find ("schema"); s != j.end())
+        if (! s->is_number_integer() || s->get<long long>() > kRigSchema) return rig;
 
     rig.rigId     = detail::jstr (j, "rig_id");
     rig.familyId  = detail::jstr (j, "family_id");
@@ -139,14 +192,23 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     if (! fe.id.empty()) st.device.files.push_back (std::move (fe));
                 }
 
-            // `measured` — linear knobs shipped as DSP instead of as model axes. Deliberately NOT in
+            // `tone` — linear knobs shipped as DSP instead of as model axes. Deliberately NOT in
             // `controls`: no file carries them in its settings, so a player that put them on the
             // selection dial would build a knob resolve() can never satisfy.
-            if (auto m = sj.find ("measured"); m != sj.end() && m->is_array())
+            if (auto m = sj.find ("tone"); m != sj.end() && m->is_array())
                 for (const auto& mj : *m)
                 {
                     if (! mj.is_object()) continue;
-                    Measured me;
+                    // ONE FORM PER KNOB. Both `positions` and `sections` on one knob is not a knob with a
+                    // spare description, it is an invalid manifest — refused whole, like a schema this
+                    // reader does not speak, and for the same reason: whichever form a reader picked, a
+                    // different reader could pick the other, and the same pack would be two products.
+                    if (mj.contains ("positions") && mj.contains ("sections"))
+                    {
+                        if (ok) *ok = false;
+                        return Rig {};
+                    }
+                    Tone me;
                     me.name      = detail::jstr (mj, "name");
                     me.sweep     = detail::jint (mj, "sweep");
                     me.placement = detail::jstr (mj, "placement", "post");
@@ -177,7 +239,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         for (const auto& pj : *ps)
                         {
                             if (! pj.is_object()) continue;
-                            MeasuredPosition p;
+                            TonePosition p;
                             p.value      = detail::jstr (pj, "value");
                             p.label      = detail::jstr (pj, "label");
                             p.norm       = detail::jnum (pj, "norm");
@@ -187,10 +249,31 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                                     if (v.is_number()) p.db.push_back (v.get<double>());
                             if (! p.value.empty()) me.positions.push_back (std::move (p));
                         }
-                    if (! me.name.empty() && ! me.positions.empty()) st.measured.push_back (std::move (me));
+                    // `sections`: every band must be readable, or the KNOB is unusable — a band a reader
+                    // cannot build (a `type` it does not know, no frequency, no `range_db`) is not skipped
+                    // on its own, because the bands it does know would then play a different pedal. The
+                    // knob is dropped and the reference position plays, which is what dropping a tone
+                    // knob has always meant. The travel law runs on rotation, t = f(reference / sweep):
+                    // a switch (no sweep), or a reference that is not a position on that dial, leaves it
+                    // nothing to run on, so such a knob cannot carry sections either.
+                    bool usable = true;
+                    if (auto ss = mj.find ("sections"); ss != mj.end() && ss->is_array())
+                        for (const auto& sx : *ss)
+                        {
+                            Section sc;
+                            if (! sx.is_object() || ! detail::readSection (sx, sc)) { usable = false; break; }
+                            me.sections.push_back (sc);
+                        }
+                    if (! me.sections.empty())
+                    {
+                        const int ref = detail::degrees (me.reference);
+                        if (me.sweep <= 0 || ref < 0 || ref > me.sweep) usable = false;
+                    }
+                    if (usable && ! me.name.empty() && (me.positions.empty() != me.sections.empty()))
+                        st.tone.push_back (std::move (me));
                 }
 
-            // `blend` — a dry/wet mix knob. Same reason as `measured` for staying out of `controls`, and
+            // `blend` — a dry/wet mix knob. Same reason as `tone` for staying out of `controls`, and
             // the same reference invariant: the models were captured at the full-WET end.
             if (auto b = sj.find ("blend"); b != sj.end() && b->is_array())
                 for (const auto& bj : *b)

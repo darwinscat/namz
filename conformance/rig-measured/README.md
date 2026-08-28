@@ -1,21 +1,23 @@
 <!-- SPDX-License-Identifier: MIT -->
 # `rig-measured` — the minimal modern device
 
-The second golden pack: **one gain dial + one measured knob**. It is the smallest device shape a
+The second golden pack: **one gain dial + two tone knobs, one per form**. It is the smallest device shape a
 player must handle end to end, and it is deliberately the shape a real dirt pedal has.
 
 ```
 Golden Drive        pedal, tone_type "crunch"
   gain              a DIAL: sweep 300°, captured at 0 / 150 / 300 → three models
-  tone              MEASURED: linear, never captured — six swept positions shipped as a filter
+  tone              TONE, `positions`: linear, never captured — six swept positions shipped as a curve
+  bass              TONE, `sections`: the same kind of knob, shipped as two parametric bands
 ```
 
 A player does two different things with those two knobs:
 
 - **gain** is in `controls` — turning it SELECTS a file (`m01…m03`);
-- **tone** is in `measured` — turning it changes nothing about which file plays; the player builds a
-  filter from `positions[]` and applies it after the stage. Interpolating between positions is what
-  makes it a continuous knob out of six measurements.
+- **tone** and **bass** are in `tone` — turning them changes nothing about which file plays; the player builds a
+  filter from `positions[]` (tone) or from `sections[]` (bass) and applies it after the stage. Interpolating
+  between positions is what makes the first a continuous knob out of six measurements; the second is
+  continuous by construction — its bands' gain runs with the dial.
 
 Everything the tone knob needs is the CURVE: `db[]`, one value per `grid` point, in physical
 units on a stated frequency grid. An earlier draft of this fixture also carried a fitted 1-pole

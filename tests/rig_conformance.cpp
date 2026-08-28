@@ -11,8 +11,10 @@
 //
 // Fixtures:
 //   conformance/rig/          a sparse channel×gain matrix — pins the SELECTION policy
-//   conformance/rig-measured/ one gain dial + a MEASURED (linear) tone knob — the minimal shape a
-//                             player must handle: pick a model by the dial, apply the tone as DSP
+//   conformance/rig-measured/ one gain dial + two TONE (linear) knobs, one per form — the minimal
+//                             shape a player must handle: pick a model by the dial, apply a knob
+//                             shipped as a measured ladder (`positions`) and one shipped as bands
+//                             (`sections`) as DSP
 // Copyright (c) 2026 Darwin's Cat — Oleh Tsymaienko <oleh@darwinscat.com> & Alisa Lafoks <alisa@darwinscat.com>.
 
 #define NAMZ_IMPLEMENTATION
@@ -77,35 +79,59 @@ static Rig buildModel (const json& expected)
         for (auto& c : st.device.controls)
             if (auto it = sw->find (c.name); it != sw->end()) c.sweep = it->get<int>();
 
-    if (auto ms = sx.find ("measured"); ms != sx.end())
+    if (auto ms = sx.find ("tone"); ms != sx.end())
         for (const auto& mx : *ms)
         {
-            Measured me;
+            Tone me;
             me.name      = mx["name"].get<std::string>();
             me.sweep     = mx["sweep"].get<int>();
             me.placement = mx["placement"].get<std::string>();
             me.reference = mx["reference"].get<std::string>();
             if (auto d = mx.find ("default"); d != mx.end()) me.defaultValue = d->get<std::string>();
             for (const auto& [k, v] : mx["operating_point"].items()) me.operatingPoint[k] = v.get<std::string>();
-            me.grid.fLo    = mx["grid"]["f_lo"].get<double>();
-            me.grid.fHi    = mx["grid"]["f_hi"].get<double>();
+            if (auto g = mx.find ("grid"); g != mx.end())      // positions only
+            {
+                me.grid.fLo    = (*g)["f_lo"].get<double>();
+                me.grid.fHi    = (*g)["f_hi"].get<double>();
+                me.grid.points = (*g)["points"].get<int>();
+            }
             if (auto t = mx.find ("trusted"); t != mx.end())
             {
-                me.trusted.loHz   = (*t)["lo_hz"].get<double>();
-                me.trusted.hiHz   = (*t)["hi_hz"].get<double>();
-                me.trusted.spanDb = (*t)["span_db"].get<double>();
-                me.trusted.levels = (*t)["levels"].get<int>();
+                me.trusted.loHz    = (*t)["lo_hz"].get<double>();
+                me.trusted.hiHz    = (*t)["hi_hz"].get<double>();
+                // The fixture has always stated these two, and the pack always carried 0/0: this recipe
+                // never copied them, and checkTone never looked. The blend block below did both.
+                me.trusted.loIndex = (*t)["lo_index"].get<int>();
+                me.trusted.hiIndex = (*t)["hi_index"].get<int>();
+                me.trusted.spanDb  = (*t)["span_db"].get<double>();
+                me.trusted.levels  = (*t)["levels"].get<int>();
             }
-            me.grid.points = mx["grid"]["points"].get<int>();
-            for (const auto& px : mx["positions"])
-            {
-                MeasuredPosition p;
-                p.value      = px["value"].get<std::string>();
-                p.norm       = px["norm"].get<double>();
-                p.db         = px["db"].get<std::vector<double>>();
-                me.positions.push_back (std::move (p));
-            }
-            st.measured.push_back (std::move (me));
+            // ONE form per knob — the fixture states one, and the model built from it carries one.
+            if (auto ps = mx.find ("positions"); ps != mx.end())
+                for (const auto& px : *ps)
+                {
+                    TonePosition p;
+                    p.value      = px["value"].get<std::string>();
+                    p.norm       = px["norm"].get<double>();
+                    p.levelDb    = px["level_db"].get<double>();   // same story as the indices above
+                    p.db         = px["db"].get<std::vector<double>>();
+                    me.positions.push_back (std::move (p));
+                }
+            if (auto ss = mx.find ("sections"); ss != mx.end())
+                for (const auto& x : *ss)
+                {
+                    Section sc;
+                    ok (sectionKindFrom (x["type"].get<std::string>(), sc.kind), "fixture section type is known");
+                    sc.hz      = x["hz"].get<double>();
+                    sc.q       = x["q"].get<double>();
+                    sc.dbAtMin = x["range_db"][0].get<double>();
+                    sc.dbAtMax = x["range_db"][1].get<double>();
+                    if (auto p = x.find ("pivot"); p != x.end()) sc.pivot = p->get<double>();
+                    if (auto h = x.find ("hz_at"); h != x.end()) { sc.hzAtMin = (*h)[0].get<double>(); sc.hzAtMax = (*h)[1].get<double>(); }
+                    if (auto q = x.find ("q_at");  q != x.end()) { sc.qAtMin  = (*q)[0].get<double>(); sc.qAtMax  = (*q)[1].get<double>(); }
+                    me.sections.push_back (sc);
+                }
+            st.tone.push_back (std::move (me));
         }
 
     // The blend block, which had no fixture at all until now — the newest and most fragile part of the
@@ -157,48 +183,85 @@ static Rig buildModel (const json& expected)
     return rig;
 }
 
-// The measured block a player reads must equal the one the fixture declares — including the curve,
-// which is the only thing that lets a better filter design ship later without re-measuring.
-static void checkMeasured (const Stage& st, const json& sx, const char* via)
+// The tone block a player reads must equal the one the fixture declares — including the curve,
+// which is the only thing that lets a better filter design ship later without re-measuring, and
+// including every number of a band, because a band is applied from those numbers and nothing else.
+static void checkTone (const Stage& st, const json& sx, const char* via)
 {
     char what[160];
     auto tag = [&what, via] (const char* w) { std::snprintf (what, sizeof (what), "%s (%s)", w, via); return what; };
-    const auto ms = sx.find ("measured");
+    const auto ms = sx.find ("tone");
     const std::size_t want = ms == sx.end() ? 0 : ms->size();
-    ok (st.measured.size() == want, tag ("measured count"));
-    if (st.measured.size() != want) return;
+    ok (st.tone.size() == want, tag ("tone count"));
+    if (st.tone.size() != want) return;
     for (std::size_t i = 0; i < want; ++i)
     {
-        const auto& me = st.measured[i];
+        const auto& me = st.tone[i];
         const auto& mx = (*ms)[i];
         ok (me.name == mx["name"].get<std::string>() && me.sweep == mx["sweep"].get<int>()
             && me.placement == mx["placement"].get<std::string>()
-            && me.reference == mx["reference"].get<std::string>(), tag ("measured identity"));
-        ok (me.grid.points == mx["grid"]["points"].get<int>(), tag ("measured grid"));
+            && me.reference == mx["reference"].get<std::string>(), tag ("tone identity"));
         // Where the knob starts. A round trip that drops this is not detectably wrong — the field is
         // optional and its absence means "start at the reference" — so only a fixture that sets it can
         // catch a writer that forgets it. One did forget.
         ok (me.defaultValue == (mx.find ("default") != mx.end() ? mx["default"].get<std::string>() : std::string{}),
-            tag ("measured default position survives the round trip"));
+            tag ("tone default position survives the round trip"));
         if (auto t = mx.find ("trusted"); t != mx.end())
             ok (me.trusted.loHz == (*t)["lo_hz"].get<double>()
                 && me.trusted.hiHz == (*t)["hi_hz"].get<double>()
+                && me.trusted.loIndex == (*t)["lo_index"].get<int>()
+                && me.trusted.hiIndex == (*t)["hi_index"].get<int>()
                 && me.trusted.spanDb == (*t)["span_db"].get<double>()
                 && me.trusted.levels == (*t)["levels"].get<int>(),
-                tag ("the band the curve may be applied in"));
-        ok (me.positions.size() == mx["positions"].size(), tag ("measured position count"));
+                tag ("the band the curve may be applied in, in Hz and as grid indices"));
+        // The knob is DSP, not an axis: it must never appear among the selectable controls.
+        for (const auto& c : st.device.controls)
+            ok (c.name != me.name, tag ("tone knob is not a selection control"));
+
+        // ONE form per knob: whichever the fixture states, the other side of the model is empty.
+        if (const auto ss = mx.find ("sections"); ss != mx.end())
+        {
+            ok (me.positions.empty() && me.grid.points == 0, tag ("a sections knob carries no ladder and no grid"));
+            ok (me.sections.size() == ss->size(), tag ("section count"));
+            if (me.sections.size() != ss->size()) continue;
+            for (std::size_t k = 0; k < me.sections.size(); ++k)
+            {
+                const auto& got = me.sections[k];
+                const auto& x   = (*ss)[k];
+                ok (std::string (sectionKindToString (got.kind)) == x["type"].get<std::string>(), tag ("section type"));
+                ok (got.hz == x["hz"].get<double>() && got.q == x["q"].get<double>(), tag ("section hz/q at the reference"));
+                ok (got.dbAtMin == x["range_db"][0].get<double>() && got.dbAtMax == x["range_db"][1].get<double>(),
+                    tag ("section range_db: signed, minus stop then plus stop"));
+                // A tilt's hinge is fitted, not assumed — the fixture states 0.35 so that a reader which
+                // silently substitutes the seesaw's 0.5 fails here.
+                if (auto p = x.find ("pivot"); p != x.end())
+                    ok (got.pivot == p->get<double>(), tag ("section pivot"));
+                // The travel: a stated pair round-trips as stated; an absent one stays 0 = does not move.
+                if (auto h = x.find ("hz_at"); h != x.end())
+                    ok (got.hzAtMin == (*h)[0].get<double>() && got.hzAtMax == (*h)[1].get<double>(), tag ("section hz_at"));
+                else
+                    ok (got.hzAtMin == 0.0 && got.hzAtMax == 0.0, tag ("section frequency does not move"));
+                if (auto q = x.find ("q_at"); q != x.end())
+                    ok (got.qAtMin == (*q)[0].get<double>() && got.qAtMax == (*q)[1].get<double>(), tag ("section q_at"));
+                else
+                    ok (got.qAtMin == 0.0 && got.qAtMax == 0.0, tag ("section Q does not move"));
+            }
+            continue;
+        }
+
+        ok (me.sections.empty(), tag ("a positions knob carries no sections"));
+        ok (me.grid.points == mx["grid"]["points"].get<int>(), tag ("tone grid"));
+        ok (me.positions.size() == mx["positions"].size(), tag ("tone position count"));
         if (me.positions.size() != mx["positions"].size()) continue;
         for (std::size_t p = 0; p < me.positions.size(); ++p)
         {
             const auto& got = me.positions[p];
             const auto& px  = mx["positions"][p];
             ok (got.value == px["value"].get<std::string>() && got.norm == px["norm"].get<double>(),
-                tag ("measured position identity"));
-            ok (got.db == px["db"].get<std::vector<double>>(), tag ("measured curve"));
+                tag ("tone position identity"));
+            ok (got.levelDb == px["level_db"].get<double>(), tag ("tone position level"));
+            ok (got.db == px["db"].get<std::vector<double>>(), tag ("tone curve"));
         }
-        // The knob is DSP, not an axis: it must never appear among the selectable controls.
-        for (const auto& c : st.device.controls)
-            ok (c.name != me.name, tag ("measured knob is not a selection control"));
     }
 
     if (auto bs = sx.find ("blend"); bs != sx.end())
@@ -312,7 +375,7 @@ static void runFixture (const std::string& dir, const std::string& flatNam, bool
         && fromManifest.firstKnown()->model    == expected["stage"]["gear"]["model"].get<std::string>()
         && fromManifest.firstKnown()->gearType == expected["stage"]["gear"]["type"].get<std::string>(),
         "gear caption (manifest)");
-    checkMeasured (*fromManifest.firstKnown(), expected["stage"], "manifest");
+    checkTone (*fromManifest.firstKnown(), expected["stage"], "manifest");
 
     Rig fromHeaders = loadRigFromFiles (files);      // spec decision A: files alone rebuild the device
     fromHeaders.name      = fromManifest.name;       // rig-level display fields live in the manifest…
@@ -320,11 +383,11 @@ static void runFixture (const std::string& dir, const std::string& flatNam, bool
     ok (! files.empty() && files[0].meta.count ("modeled_by") == 1, "headers carry modeled_by per file");
     checkRig (fromHeaders, "headers-only fallback");
 
-    // A lone .namz carries no measured block — and that is CORRECT, not a loss: every file was
-    // captured with the knob at `reference`, and the shipped curves are relative to it. Without the
+    // A lone .namz carries no tone block — and that is CORRECT, not a loss: every file was
+    // captured with the knob at `reference`, and the shipped description is relative to it. Without the
     // manifest a player simply plays the reference tone, which is what those weights encode.
-    ok (fromHeaders.firstKnown() != nullptr && fromHeaders.firstKnown()->measured.empty(),
-        "headers-only device has no measured block (it plays the reference position)");
+    ok (fromHeaders.firstKnown() != nullptr && fromHeaders.firstKnown()->tone.empty(),
+        "headers-only device has no tone block (it plays the reference position)");
 
     // --- 2. SELECT: the expectation table pins the policy --------------------------------------
     const auto* dev = &fromManifest.firstKnown()->device;

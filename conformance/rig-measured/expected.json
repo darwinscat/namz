@@ -10,7 +10,7 @@
     "tone_type": "crunch",
     "controls": "gain:gain=0|150|300",
     "sweep": { "gain": 300 },
-    "measured": [
+    "tone": [
       {
         "name": "tone",
         "sweep": 300,
@@ -27,6 +27,17 @@
           { "value": "180", "norm": 0.6, "level_db": -1.78, "db": [0.0, -0.1, -0.1, -0.2, -0.7, -2.6, -7.0, -12.4] },
           { "value": "240", "norm": 0.8, "level_db": -0.93, "db": [0.0, 0.0, -0.1, -0.1, -0.3, -1.2, -3.9, -8.1] },
           { "value": "300", "norm": 1.0, "level_db": 0.0, "db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }
+        ]
+      },
+      {
+        "name": "bass",
+        "sweep": 300,
+        "placement": "post",
+        "reference": "150",
+        "operating_point": { "gain": "150" },
+        "sections": [
+          { "type": "low_shelf", "hz": 167.0, "q": 0.58, "range_db": [-12.0, 6.0], "hz_at": [120.0, 240.0], "q_at": [0.5, 0.7] },
+          { "type": "tilt", "hz": 1077.0, "q": 0.65, "pivot": 0.35, "range_db": [-3.0, 1.5] }
         ]
       }
     ],

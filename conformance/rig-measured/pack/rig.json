@@ -95,7 +95,8 @@
         "type": "pedal"
       },
       "kind": "nam",
-      "measured": [
+      "slot": "pedal",
+      "tone": [
         {
           "default": "120",
           "grid": {
@@ -120,7 +121,7 @@
                 -16.8,
                 -24.1
               ],
-              "level_db": 0.0,
+              "level_db": -5.15,
               "norm": 0.0,
               "value": "0"
             },
@@ -135,7 +136,7 @@
                 -13.4,
                 -20.2
               ],
-              "level_db": 0.0,
+              "level_db": -3.9,
               "norm": 0.2,
               "value": "60"
             },
@@ -150,7 +151,7 @@
                 -10.1,
                 -16.3
               ],
-              "level_db": 0.0,
+              "level_db": -2.75,
               "norm": 0.4,
               "value": "120"
             },
@@ -165,7 +166,7 @@
                 -7.0,
                 -12.4
               ],
-              "level_db": 0.0,
+              "level_db": -1.78,
               "norm": 0.6,
               "value": "180"
             },
@@ -180,7 +181,7 @@
                 -3.9,
                 -8.1
               ],
-              "level_db": 0.0,
+              "level_db": -0.93,
               "norm": 0.8,
               "value": "240"
             },
@@ -204,15 +205,52 @@
           "sweep": 300,
           "trusted": {
             "hi_hz": 9000.0,
-            "hi_index": 0,
+            "hi_index": 6,
             "levels": 8,
             "lo_hz": 40.0,
-            "lo_index": 0,
+            "lo_index": 1,
             "span_db": 24.0
           }
+        },
+        {
+          "name": "bass",
+          "operating_point": {
+            "gain": "150"
+          },
+          "placement": "post",
+          "reference": "150",
+          "sections": [
+            {
+              "hz": 167.0,
+              "hz_at": [
+                120.0,
+                240.0
+              ],
+              "q": 0.58,
+              "q_at": [
+                0.5,
+                0.7
+              ],
+              "range_db": [
+                -12.0,
+                6.0
+              ],
+              "type": "low_shelf"
+            },
+            {
+              "hz": 1077.0,
+              "pivot": 0.35,
+              "q": 0.65,
+              "range_db": [
+                -3.0,
+                1.5
+              ],
+              "type": "tilt"
+            }
+          ],
+          "sweep": 300
         }
       ],
-      "slot": "pedal",
       "tone_type": "crunch"
     }
   ],
@@ -220,5 +258,5 @@
   "modeled_by": "namz conformance",
   "name": "Golden Drive",
   "rig_id": "namz-golden-drive",
-  "schema": 2
+  "schema": 3
 }

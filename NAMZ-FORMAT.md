@@ -141,7 +141,7 @@ drag-dropping the zip or the folder, or via an "Import" action.
 
 ```
 ReVolt Guitar.orbitrig/            (share as ReVolt Guitar.orbitrig.zip)
-  rig.json                         the manifest — chain + controls + measured + file index + EQ hints
+  rig.json                         the manifest — chain + controls + tone + file index + EQ hints
   m01.namz                         models (codec=store), one per knob/switch combination
   ...
 ```
@@ -152,7 +152,7 @@ what it is (a player with no manifest falls back to scanning `.namz` + reading t
 
 ```json
 {
-  "format": "orbitrig", "schema": 2,
+  "format": "orbitrig", "schema": 3,
   "rig_id": "dc-ts9", "name": "Golden Drive", "modeled_by": "Darwin's Cat",
   "chain": [
     { "kind": "nam", "slot": "pedal",
@@ -161,14 +161,20 @@ what it is (a player with no manifest falls back to scanning `.namz` + reading t
       "controls": [
         { "name": "gain", "role": "gain", "sweep": 300, "values": ["0","150","300"] }
       ],
-      "measured": [
+      "tone": [
         { "name": "tone", "sweep": 300, "placement": "post", "reference": "300",
           "operating_point": { "gain": "150" },
           "grid": { "f_lo": 20.0, "f_hi": 20000.0, "points": 8 },
-          "trusted": { "lo_hz": 60.0, "hi_hz": 4600.0, "span_db": 24.0, "levels": 5 },
+          "trusted": { "lo_hz": 53.7, "hi_hz": 7455.2, "lo_index": 1, "hi_index": 6, "span_db": 24.0, "levels": 5 },
           "positions": [
             { "value": "0",   "norm": 0.0, "db": [-0.2, -0.2, -0.4, -0.9, -3.2, -9.4, -16.8, -24.1] },
             { "value": "300", "norm": 1.0, "db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }
+          ] },
+        { "name": "bass", "sweep": 300, "placement": "post", "reference": "150",
+          "operating_point": { "gain": "150" },
+          "sections": [
+            { "type": "low_shelf", "hz": 167, "q": 0.58, "range_db": [-12.0, 6.0],
+              "hz_at": [120, 240], "q_at": [0.5, 0.7] }
           ] }
       ],
       "files": [
@@ -185,41 +191,55 @@ what it is (a player with no manifest falls back to scanning `.namz` + reading t
   never break old players. `slot` (`pedal`/`preamp`/`amp`/`poweramp`/`rig`) routes the stage.
 - **`files`** — the authoritative list for a `nam` stage: each entry is a model + its `settings`.
   (A manifest-less folder is read by scanning `*.namz` instead.)
-- **`measured`** — knobs that are NOT model axes: see below.
+- **`tone`** — knobs that are NOT model axes: see below.
 - **`blend`** — dry/wet mix knobs, the third kind of control: see below.
 - **`eq` stage** — the tone stack is ALWAYS software; this stage is optional author guidance for the
   player's EQ, never captured audio. Fields (all optional): `model` (e.g. `fmv`), `defaults` (a
   starting value for any EQ knob), `hidden` (knobs to hide, e.g. `["hpf","lpf"]`), `tone_only` (a
   single simplified "TONE" knob instead of the full EQ), `show_curve` (draw the EQ response or not).
 
-### `measured` — linear knobs the capture never turned into axes
+### `tone` — linear knobs the capture never turned into axes
 
 A tone control after the clipper is **linear**: turning it changes the frequency response, not the
 distortion. Capturing it as a matrix axis would multiply the take count for nothing — a 6-position
 tone knob turns 21 takes into 126. So the capture tool measures it instead: one short sweep per
-position at a fixed operating point, deconvolved against a reference position. The pack ships the
-recovered response, the player applies it as DSP, and the knob it draws is CONTINUOUS — the whole
-point of measuring rather than capturing.
+position at a fixed operating point, deconvolved against a reference position. The pack ships what it
+found, the player applies it as DSP, and the knob it draws is CONTINUOUS — the whole point of
+measuring rather than capturing.
 
-Format invariant: **every file of the stage was captured with each measured control at its
-`reference` position**, and the shipped responses are relative to it. `reference` is a fact about the
+Format invariant: **every file of the stage was captured with each tone control at its
+`reference` position**, and the shipped description is relative to it. `reference` is a fact about the
 capture session, stated by the tool that recorded it — never inferred by a reader. For a device
 captured before anyone thought of measuring, it is also the one fact that cannot be recovered later:
 the knob has to still be where it was. The reference position is
-therefore flat by construction, so a player that ignores `measured` — or a lone `.namz` pulled out
-of the pack, which carries no measured block — plays the reference tone, which is exactly what those
+therefore flat by construction, so a player that ignores `tone` — or a lone `.namz` pulled out
+of the pack, which carries no tone block — plays the reference tone, which is exactly what those
 weights encode. Nothing is double-filtered and nothing lies.
+
+**One form per knob.** A tone knob is described EITHER by `positions` — the measured ladder, a dB
+table per swept position — OR by `sections` — the same knob written as parametric bands whose gain
+moves with the dial. Exactly one of the two keys is present. A knob carrying both is not a knob with
+a spare description, it is an **invalid manifest**: a reader refuses the whole file, not the knob,
+because whichever form one reader picked another could pick the other, and the same pack would be
+two products. `positions` stays in the format permanently; `sections` is the second form, not a
+replacement. A reader with a manifest-less fallback then takes that fallback — the pack loads as the
+headers alone describe it, with no tone knobs — exactly as it does for a `schema` it does not speak;
+there is no third behaviour. A knob carrying NEITHER key, or `sections` without a `sweep`, is not an
+invalid manifest: that knob is skipped and the reference position plays.
 
 | field | meaning |
 |---|---|
-| `name` / `sweep` | the control and how far it turns, degrees — **`sweep` absent or 0 means a SWITCH**: a player draws a toggle over `positions` and does NOT interpolate between them, because a switch has nothing in between. With a sweep it is a dial: draw a knob and interpolate |
+| `name` / `sweep` | the control and how far it turns, degrees — **`sweep` absent or 0 means a SWITCH**: a player draws a toggle over `positions` and does NOT interpolate between them, because a switch has nothing in between. With a sweep it is a dial: draw a knob and interpolate. A switch ships `positions`; `sections` needs a sweep, because its travel law is stated in rotation |
 | `placement` | where the filter goes. `post` — after the whole stage, including after a `blend` mix. `wet` — inside the wet path, before the mix, which is where a tone stack in a blended pedal physically sits: applying such a curve `post` would filter the clean signal the blend exists to keep clean. An unknown value: SKIP the control rather than guess |
-| `reference` | the position every file was captured at (curves are relative to it). It MUST appear in `positions[]`, and its `db[]` MUST be all zeros — that is what "flat by construction" means, and a reader may assert it. A non-zero reference row is a broken pack: the curve would be applied on top of a model that already contains it |
+| `reference` | the position every file was captured at (the description is relative to it). With `positions` it MUST appear in `positions[]`, and its `db[]` MUST be all zeros — that is what "flat by construction" means, and a reader may assert it. A non-zero reference row is a broken pack: the curve would be applied on top of a model that already contains it. With `sections` it is the position where every band's gain is zero — the hinge of the travel law below |
 | `default` | where a player starts the knob. Absent: start at `reference` |
 | `operating_point` | the capture axes held while sweeping — provenance, and the honest limit of the measurement |
-| `grid` | the log-spaced frequency grid `db` is sampled on. **Endpoints inclusive**: `f[i] = f_lo · (f_hi/f_lo)^(i / (points − 1))`, so `f[0]` is exactly `f_lo` and `f[points − 1]` exactly `f_hi`. The band-centre convention some analysers use would move the top of an 8-point 20 Hz – 20 kHz grid from 20 kHz to 13 kHz, and every reading with it |
-| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels`. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at |
-| `positions[]` | per measured position, in dial order |
+| `grid` | `positions` only: the log-spaced frequency grid `db` is sampled on. **Endpoints inclusive**: `f[i] = f_lo · (f_hi/f_lo)^(i / (points − 1))`, so `f[0]` is exactly `f_lo` and `f[points − 1]` exactly `f_hi`. The band-centre convention some analysers use would move the top of an 8-point 20 Hz – 20 kHz grid from 20 kHz to 13 kHz, and every reading with it |
+| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels` — and the SAME band as grid indices, `lo_index`, `hi_index`, which are the authority: the hold rule is applied on the grid, and two readers rounding Hz to an index differently pick neighbouring points, decibels apart on a 30 dB tilt, so the producer says which points it meant. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` — and `lo_index > hi_index`, the same statement in indices — with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at. With `sections` it is provenance — where the ladder the bands were fitted to held — and nothing to apply: a band is one filter, played whole |
+| `positions[]` | the measured ladder: per swept position, in dial order — see below |
+| `sections[]` | the knob as bands, applied in series — see below. Magnitude-only filters, so their order is immaterial |
+
+#### `positions` — the measured ladder
 
 Each position carries the **measurement itself**, and nothing else:
 
@@ -275,9 +295,121 @@ invent one: two readers starting the same pack at different knob positions make 
 Only controls AFTER the non-linearity qualify: a knob before the clipper changes the drive into it, so its
 effect is not linear and subtracting it is a lie.
 
+#### `sections` — the knob as bands
+
+The same knob, written as what it turned out to be: one or more parametric bands whose KIND is fixed
+and whose GAIN moves with the dial. The kind — which shelf or bell, where it sits, how steep — is where
+the circuit's character lives, and the gain is just a number, so a player can turn the number further
+than the pedal ever went and still be turning that pedal's knob. A ladder has no handle for that. Where
+the hardware's corner or Q also drifts along the travel, `hz_at` / `q_at` say so, and the law below
+moves them with the same `t` that moves the gain.
+
+```json
+{ "type": "low_shelf" | "bell" | "high_shelf" | "tilt",
+  "hz": 197, "q": 0.76, "range_db": [-8.9, 1.2] }
+```
+
+Optional keys: `pivot` (only on a `tilt`), `hz_at`: `[at the minus stop, at the plus stop]`, `q_at`:
+the same for Q. A key that is absent means the quantity does not move.
+
+| field | meaning |
+|---|---|
+| `type` | the band's shape: `low_shelf`, `bell`, `high_shelf`, `tilt`. A `type` a reader does not know makes the **knob** unusable — skip the knob, do not play the bands you do know: the reference position is what every tone knob promises to be, a subset of its bands is a different pedal |
+| `hz` / `q` | the band's centre (`bell`) or corner (shelves, `tilt`) and its Q **at `reference`**, where its gain is zero |
+| `range_db` | the band's gain at the **minus stop** and at the **plus stop**, in that order, **SIGNED** — a cut is negative. The minus stop is the dial's 0, the plus stop is `sweep`: the order is by POSITION, never by sign, so a band that boosts at 0° carries a positive first entry. (The capture side handles the same pair as two magnitudes ordered by sign — most-cut, most-boost — so the pair may arrive REVERSED as well as unsigned; the pack does neither: `[-8.9, 1.2]` reads as 8.9 dB of cut at 0° and 1.2 dB of boost at full.) On a stop the reference sits on, that stop's entry is 0 — the law leaves it nothing else to be |
+| `pivot` | `tilt` only: where the seesaw hinges, 0…1 — see below. Absent on a tilt: 0.5, the symmetric seesaw. Stored as written; a value outside 0…1 is clamped when applied, as the formula says. On any other `type` it is not read — a reader does not look at it, so it cannot spoil the band |
+| `hz_at` / `q_at` | what `hz` / `q` become at the two stops, `[minus, plus]` — the same order as `range_db`, by position. Both entries strictly positive: a 0 is not a frequency, and a pair a reader cannot read makes the knob unusable (skip the knob). A side where the knob has no travel — `reference` IS that stop — carries the reference value itself. Absent: the quantity is one frozen value across the whole travel |
+
+**Computing a band.** RBJ cookbook, at the player's sample rate `fs`, with `hz`, `q` and `gain_db` the
+band's values AT THE CURRENT POSITION — all three come from the travel law below, not just the gain:
+
+```
+A     = 10^(gain_db / 40)
+w0    = 2π · hz / fs
+cw    = cos(w0),  sw = sin(w0)
+alpha = sw / (2 · q)
+
+bell:
+  b0 = 1 + alpha·A      b1 = -2·cw      b2 = 1 - alpha·A
+  a0 = 1 + alpha/A      a1 = -2·cw      a2 = 1 - alpha/A
+
+low_shelf:   s = 2·sqrt(A)·alpha
+  b0 =     A·((A+1) - (A-1)·cw + s)
+  b1 = 2·A·((A-1) - (A+1)·cw)
+  b2 =     A·((A+1) - (A-1)·cw - s)
+  a0 =       (A+1) + (A-1)·cw + s
+  a1 = -2·  ((A-1) + (A+1)·cw)
+  a2 =       (A+1) + (A-1)·cw - s
+
+high_shelf and tilt:   s = 2·sqrt(A)·alpha
+  b0 =      A·((A+1) + (A-1)·cw + s)
+  b1 = -2·A·((A-1) + (A+1)·cw)
+  b2 =      A·((A+1) + (A-1)·cw - s)
+  a0 =        (A+1) - (A-1)·cw + s
+  a1 =  2·   ((A-1) - (A+1)·cw)
+  a2 =        (A+1) - (A-1)·cw - s
+
+The coefficients are normalised by a0.  hz is clamped to [10, fs·0.49], q to [0.05, 20].
+```
+
+**`tilt`** is the same coefficients as `high_shelf`, plus a factor on the numerator:
+
+```
+trim = 10^(-clamp(pivot, 0, 1) · gain_db / 20)
+b0, b1, b2 are multiplied by trim
+```
+
+So a tilt is a high shelf with the floor taken out from under it: the shelf still lifts the top by
+`gain_db`, and the trim drops everything by `pivot · gain_db`, which leaves the two arms straddling
+the hinge — the top arm ends at `+gain_db · (1 − pivot)`, the bottom arm at `−gain_db · pivot`. Half
+is the seesaw everyone pictures; the hardware rarely agrees, which is why the value is fitted and
+shipped rather than assumed.
+
+**How a band moves with the dial.**
+
+- `hz` and `q` — the values at the position the takes were shot (`reference`), where the band's gain
+  is zero.
+- `hz_at`, `q_at` — the values at the two stops of the knob.
+- Between the stops: the frequency is interpolated geometrically, Q linearly, the gain linearly in dB.
+- `range_db` — the gain at the minus stop and at the plus stop.
+
+The gain is zero AT `reference`, and it runs linearly in dB from there to each stop — two straight
+segments meeting at zero, **not** one straight line drawn through the two stops (those coincide only
+when the reference is itself a stop). Write the position as `t`: the knob's rotation normalised so
+that `reference` is 0, the minus stop is −1 and the plus stop is +1. `reference` is a bare integer of
+degrees, 0…`sweep`, like every dial position; one that is not a position on that dial makes the knob
+unusable (skip the knob). With `norm = value / sweep` and `norm_ref = reference / sweep`:
+
+```
+t = 0                                      at  norm = norm_ref     (the reference: flat)
+t = (norm − norm_ref) / norm_ref           for norm < norm_ref     (−1 at the minus stop)
+t = (norm − norm_ref) / (1 − norm_ref)     for norm > norm_ref     (+1 at the plus stop)
+
+gain_db(t) = −t · range_db[0]              for t <  0
+gain_db(t) =  t · range_db[1]              for t >= 0
+
+side       = [0] for t < 0, [1] for t >= 0
+hz(t)      = hz · (hz_at[side] / hz) ^ |t|          (geometric; hz(0) = hz)
+q(t)       = q  + (q_at[side]  − q) · |t|           (linear;    q(0) = q)
+```
+
+The frequency and the Q split at the reference exactly as the gain does: which stop they head for is
+decided by the SIGN of `t`, how far along by `|t|`. A reader that ran the frequency as one straight
+line through both stops would put a different corner under the same knob position.
+
+`t` is a function of POSITION, and of nothing else — it is never derived from a band's gain. The two
+readings agree only because the gain is declared linear in position above; a reader that recovered
+`t` from `gain_db` instead would draw the right curve for a fitted band and a different one for a
+hand-authored band, and nothing would complain. A stop the reference sits on has no positions on its
+side, so its divisor is never used: with `reference` at the plus stop, `norm > norm_ref` never happens,
+and the reference itself is the `t = 0` line — which is why that line comes first.
+
+Between the stops nothing is held or extrapolated: the knob cannot go past a stop, and every position
+inside is defined. A band is applied whole; `trusted` is provenance here, not an instruction.
+
 ### `blend` — a dry/wet mix knob
 
-Neither of the other two roles fits. A blend is not a filter, so `measured` cannot describe it. And it
+Neither of the other two roles fits. A blend is not a filter, so `tone` cannot describe it. And it
 must not become a captured axis: the dry signal IS the DI the model is already being fed, so eleven
 blend positions as an axis would be eleven copies of one model plus arithmetic the player does for free.
 A blend costs **zero** extra takes.
@@ -306,15 +438,15 @@ out = polarity · dry_gain(pos) · (DI * dry) + wet_gain(pos) · model(DI)
 | field | meaning |
 |---|---|
 | `name` / `sweep` | the knob and its rotation; `sweep` absent or 0 means a switch |
-| `reference` | the full-WET end — where every model of the stage was captured. Same invariant as `measured`: ignore `blend` and you play full wet, which is exactly what the weights encode |
+| `reference` | the full-WET end — where every model of the stage was captured. Same invariant as `tone`: ignore `blend` and you play full wet, which is exactly what the weights encode |
 | `dry_end` | the full-DRY end, where `dry` was measured. At that position the output is the dry path ALONE and therefore linear, which is the whole reason a blend can be characterised from outside the box |
 | `dry[]` | the dry path's response SHAPE, dB per `grid` point, with its own broadband level removed. On a bass pedal this is almost never flat — keeping a clean low end out of the distortion is what the circuit is for |
 | `dry_level_db` | the level that was removed: the dry path's broadband gain, dB, on the same scale as the model's own output. REQUIRED, and not derivable from anything else in the pack — a reader cannot re-measure it, because the pedal is not in their hands. Omit it and a dry path with 9 dB of insertion loss renders 9 dB too loud at every position that is not an end |
-| `trusted` | as in `measured`: where `dry` was shown to be a filter, over what drive range |
+| `trusted` | as in `tone`: where `dry` was shown to be a filter, over what drive range |
 | `polarity` | the sign of the dry branch **against the model's output**, `+1` or `-1`. Defined that way and not "the box inverts one path", because a neural model is trained on the waveform and therefore already contains the wet path's own inversion: stating it against the hardware would have producer and consumer applying opposite signs. Measured by deconvolving a sweep at each end and comparing the sign of the impulse response's leading edge — the same recordings the rest of the block comes from |
 | `law` | how the gains were derived (`linear`, `equal_power`, …) — PROVENANCE only, never something a reader implements |
 | `gains_measured` | whether `dry_db`/`wet_db` were MEASURED or derived from `law`. A derived pair assumes the pot is an amplitude-linear crossfade and a real one often is not, and a reader cannot tell from the numbers. `false` means treat them as an estimate |
-| `positions[]` | `value`, `norm` (**rotation**, exactly as for `measured`, ascending), and the two gains `dry_db` / `wet_db`. `-120` means **exactly silent**, not 10⁻⁶: a literal conversion leaks both branches at the ends |
+| `positions[]` | `value`, `norm` (**rotation**, exactly as for `tone`, ascending), and the two gains `dry_db` / `wet_db`. `-120` means **exactly silent**, not 10⁻⁶: a literal conversion leaks both branches at the ends |
 
 **Interpolating the gains** between positions is done in **amplitude**, not in dB. Between `wet_db: -6`
 and `wet_db: -120` a dB interpolation puts the halfway point at −63 dB — inaudible — where the amplitude
@@ -324,14 +456,14 @@ the same knob position.
 **Phase and time.** The dry branch is summed with `model(DI)` in **parallel**, so how a reader realises
 `dry[]` decides the result, not just its tone. Build it **minimum phase**, and keep the two branches
 sample-aligned: a linear-phase FIR long enough to shape 80 Hz carries about 10 ms of bulk delay, and a
-blend with 10 ms between its branches is a flanger. For a series `measured` filter the choice is a
+blend with 10 ms between its branches is a flanger. For a series `tone` filter the choice is a
 nuance; here it is the whole sound.
 
-**Order within a stage.** `measured` controls compose in any order among themselves — magnitude-only
+**Order within a stage.** `tone` controls compose in any order among themselves — magnitude-only
 linear filters commute. Against a `blend` they do not: apply every `placement: "wet"` filter to the
 model's output first, then the mix, then every `placement: "post"` filter to the result.
 
-A reader that does not implement `blend` skips it and plays the reference, exactly as with `measured`.
+A reader that does not implement `blend` skips it and plays the reference, exactly as with `tone`.
 
 **Control values are JSON strings**, always — `"300"`, not `300`. A degree is written as a bare integer
 inside that string, which is a different statement from being a JSON number, and a reader is entitled to
@@ -347,6 +479,12 @@ packs plus its boost is still one pedal, and a player may offer them together. I
 `.namz` header as well as the manifest, so a file separated from its pack can still be recognised as
 part of the family. Nothing in this format requires a reader to act on it; it is there so that the fact
 survives, because it cannot be reconstructed later.
+
+The current `schema` is **3** (2 → 3: `measured` became `tone` and grew `sections`). Had the number
+stayed at 2, a schema-2 reader would have found no `measured` key and played every tone knob flat,
+silently — the exact failure the number exists to catch; at 3 it refuses instead. `measured` is not
+read: no pack carrying it was ever published. `schema` is a JSON integer; a reader refuses a manifest
+whose `schema` is anything else, because a number it cannot judge is not a number it may assume.
 
 Additive keys never bump `schema`; a bump is reserved for an incompatible change (avoided by
 design). The reference reader/selector is `namz::rig`.
