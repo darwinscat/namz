@@ -710,6 +710,11 @@ struct Rig
     // GROUPS in a list and does nothing else: sharing a rig_id would merge them back into one device
     // with one matrix, which is exactly the pretence splitting them was meant to end.
     std::string familyId;
+    // The box's own face: the file name, in the pack root, of the device photograph this pack ships
+    // ("device.webp") — a cut-out, background removed and alpha kept, for players that draw the box
+    // they are playing. Empty = the pack ships no picture. Additive: `schema` stays 3, and a reader
+    // that does not know the key plays exactly as before.
+    std::string picture;
     std::vector<Stage> chain;                        // signal order
 
     // First stage the player can actually run (kind != Unknown), or nullptr.

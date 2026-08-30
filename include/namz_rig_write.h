@@ -260,6 +260,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
     if (! rig.familyId.empty())  j["family_id"]  = rig.familyId;
     if (! rig.name.empty())      j["name"]       = rig.name;
     if (! rig.modeledBy.empty()) j["modeled_by"] = rig.modeledBy;
+    if (! rig.picture.empty())   j["picture"]    = rig.picture;
 
     auto chain = nlohmann::ordered_json::array();
     for (const auto& st : rig.chain)
