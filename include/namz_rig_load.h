@@ -124,6 +124,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
     rig.familyId  = detail::jstr (j, "family_id");
     rig.name      = detail::jstr (j, "name");
     rig.modeledBy = detail::jstr (j, "modeled_by");
+    rig.picture   = detail::jstr (j, "picture");
 
     const auto chainIt = j.find ("chain");
     if (chainIt == j.end() || ! chainIt->is_array()) return rig;   // no runnable chain

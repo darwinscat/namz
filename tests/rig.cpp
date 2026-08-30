@@ -36,6 +36,24 @@ int main()
         ok (parseControlsSpec ("garbage").empty(), "junk rejected quietly");
     }
 
+    // --- `picture` — the pack's device photograph ------------------------------------------------
+    {
+        Rig rig;
+        rig.rigId = "dc-x"; rig.name = "X";
+        rig.picture = "device.webp";
+        Stage st; st.kind = StageKind::Nam; st.slot = "pedal";
+        st.device.files.push_back ({ "a.namz", { { "gain", "0" } } });
+        rig.chain.push_back (st);
+        bool valid = false;
+        const auto back = loadRigManifest (writeManifest (rig), &valid);
+        ok (valid && back.picture == "device.webp", "picture round-trips");
+        rig.picture.clear();
+        const auto text = writeManifest (rig);
+        ok (text.find ("picture") == std::string::npos, "no picture, no key");
+        const auto back2 = loadRigManifest (text, &valid);
+        ok (valid && back2.picture.empty(), "absent stays absent");
+    }
+
     // --- meta-driven device --------------------------------------------------------------------
     {
         const std::string spec = "channel:channel=green|red; boost:boost=off|on; gain:gain=0|150|300";

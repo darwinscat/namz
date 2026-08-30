@@ -6,6 +6,16 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [3.2.0] — 2026-08-30 — a pack shows its face
+
+### Added
+- **`picture`** — a top-level manifest key naming the device photograph the pack ships (a file in the
+  pack root, e.g. `"picture": "device.webp"`): a cut-out with its background removed and alpha kept,
+  for players that draw the box they are playing. The capture side scales and encodes it at export;
+  a player only draws it. Additive: `schema` stays 3, absent = the pack ships no picture, and a
+  reader that does not know the key plays exactly as before.
+- **`NAMZ_VERSION` is 3.2.0**, and so is the CMake project.
+
 ## [3.1.0] — 2026-08-28 — a file says how late it is
 
 ### Added

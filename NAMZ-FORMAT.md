@@ -143,6 +143,7 @@ drag-dropping the zip or the folder, or via an "Import" action.
 ReVolt Guitar.orbitrig/            (share as ReVolt Guitar.orbitrig.zip)
   rig.json                         the manifest — chain + controls + tone + file index + EQ hints
   m01.namz                         models (codec=store), one per knob/switch combination
+  device.webp                      the box's photograph (optional) — see `picture` below
   ...
 ```
 
@@ -159,6 +160,7 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
 {
   "format": "orbitrig", "schema": 3,
   "rig_id": "dc-ts9", "name": "Golden Drive", "modeled_by": "Darwin's Cat",
+  "picture": "device.webp",
   "chain": [
     { "kind": "nam", "slot": "pedal",
       "gear": { "make": "Darwin's Cat", "model": "Golden Drive", "type": "pedal" },
@@ -208,6 +210,11 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     it measured (the first file's own is 0); a player delays each model by the largest lag minus its
     own, so any pair sums in phase. Absent = not measured: a player that crossfades must measure for
     itself, and a stage where some entries carry it and some do not is not measured either.
+- **`picture`** — the file name, in the pack root, of the device's photograph (`"device.webp"`), for
+  players that draw the box they are playing: a cut-out — background removed, alpha kept — scaled and
+  encoded (WebP) by the capture side at export; a player only draws it. Optional and additive:
+  absent = the pack ships no picture, and a reader that does not know the key plays as before
+  (`schema` stays 3).
 - **`tone`** — knobs that are NOT model axes: see below.
 - **`blend`** — dry/wet mix knobs, the third kind of control: see below.
 - **`eq` stage** — the tone stack is ALWAYS software; this stage is optional author guidance for the
