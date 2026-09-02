@@ -6,6 +6,40 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [3.3.0] — 2026-09-02 — a capture is of one box, and the box has a page
+
+### Added
+- **`gear.year` / `gear.serial_number` / `gear.designed_in` / `gear.made_in`** — the PARTICULAR unit a
+  stage was captured from, rather than the family its silkscreen names. "Big Muff Pi" has been a dozen
+  circuits over fifty years under one name, so make and model alone never identify a device. Where it
+  was drawn up and where it was screwed together are two fields and not a sentence, because for gear
+  the pair is often the variant itself — a Japanese TS808 and a Taiwanese one are different pedals.
+  The year is a JSON integer; the serial is a **string**, because it is an identifier and not a
+  quantity. Stamped into every model file as well as the manifest (`gear_year`, `gear_serial_number`,
+  `designed_in`, `made_in`), so a lone `.namz` handed to another player still says which unit it came
+  off.
+- **`url`** (top level) — the PACK's page: where a player can send somebody to hear it or read about
+  it. **`gear.url`** — the BOX's page, which is a different link with a different owner: a reader
+  handed one of them cannot tell "buy this pedal" from "get this pack". Both are **absolute `https://`
+  only, and a reader MUST drop anything else** — a pack is a file from a stranger, and a player that
+  follows a `file://` or a `javascript:` out of one has handed that stranger the machine it runs on.
+  The reference loader drops such a value without refusing the manifest.
+- **`NAMZ_VERSION` is 3.3.0**, and so is the CMake project.
+
+All of the above are optional and additive: `schema` stays 3, absent means the pack did not say
+(never "unknown"), and a reader that does not know the keys plays exactly as before.
+
+### Fixed
+- **A metadata value with a leading zero stays a string.** The header types `true`/`false` to a bool
+  and all-digits to an integer, so a serial number stamped `0012345` went into the file as `12345` and
+  came back out of `readMeta` as `"12345"` — a different string than the writer put in, while
+  `rig.json`, which types nothing, still said `0012345`: the same box read two ways depending on which
+  half of the pack you asked. A leading zero is not a digit of a quantity but part of an identifier,
+  and JSON says as much about its own literals (a number may not start with a redundant zero). Bare
+  `"0"` is still the number zero. Decided by the value and never by the key — the codec does not know
+  which format is stamping it. **Both language ports carry the same rule** (each bumped to 1.1.0), and
+  the differential tests hold C++ and JS to byte-identical output on exactly this input.
+
 ## [3.2.0] — 2026-08-30 — a pack shows its face
 
 ### Added

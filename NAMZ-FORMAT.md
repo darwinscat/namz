@@ -71,6 +71,10 @@ weight decode. Conventional fields:
 | `modeled_by` | `Darwin's Cat` | provenance / tooltip |
 | `gear_make` / `gear_model` | `Two Notes` / `ReVolt Guitar` | a caption |
 | `gear_type` | `preamp` | — |
+| `gear_year` | `1979` | the year THIS box was built |
+| `gear_serial_number` | `0012345` | the unit, not the family — a string, zeros and all |
+| `gear_url` | `https://…` | the box's page (`https://` only, or a reader drops it) |
+| `designed_in` / `made_in` | `Japan` / `Taiwan` | where it was drawn up / screwed together |
 | `tone_type` | `clean` / `edge` / `crunch` / `hi-gain` | how much gain this sounds like |
 | `voicing` | `od` / `dist` / `fuzz` | what KIND of dirt (absent = unstated) |
 | `boost` | `true` | a boost indicator |
@@ -165,10 +169,13 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
 {
   "format": "orbitrig", "schema": 3,
   "rig_id": "dc-ts9", "name": "Golden Drive", "modeled_by": "Darwin's Cat",
-  "picture": "device.webp",
+  "picture": "device.webp", "url": "https://darwinscat.com/packs/golden-drive",
   "chain": [
     { "kind": "nam", "slot": "pedal",
-      "gear": { "make": "Darwin's Cat", "model": "Golden Drive", "type": "pedal" },
+      "gear": { "make": "Darwin's Cat", "model": "Golden Drive", "type": "pedal",
+                "year": 1979, "serial_number": "0012345",
+                "designed_in": "Japan", "made_in": "Japan",
+                "url": "https://darwinscat.com/gear/golden-drive" },
       "tone_type": "crunch",
       "controls": [
         { "name": "gain", "role": "gain", "sweep": 300, "values": ["0","150","300"] }
@@ -220,6 +227,20 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
   encoded (WebP) by the capture side at export; a player only draws it. Optional and additive:
   absent = the pack ships no picture, and a reader that does not know the key plays as before
   (`schema` stays 3).
+- **`url`** — the PACK's page: where a player can send somebody to hear it, read about it or find the
+  packs beside it. Not the device's page — that one belongs to the box and lives in `gear.url`; a
+  reader handed a single link cannot tell "buy this pedal" from "get this pack", and the two are drawn
+  in different places. **Absolute `https://` only, and a reader MUST drop anything else** (a pack is a
+  file from a stranger, and a player that follows a `file://` or a `javascript:` out of one has handed
+  that stranger the machine). Optional and additive.
+- **`gear`** — the box this stage was captured from. `make` / `model` / `type` are its caption, and
+  the rest is the PARTICULAR unit rather than the family: `year` (a JSON integer — the year it was
+  built), `serial_number` (a **string**: an identifier, so `"0012345"` keeps its zeros and is never
+  written as a number), `designed_in` and `made_in` (two fields, not a sentence — a reader that wants
+  "Made in Japan" and one that wants "designed in France, made in China" need the same data shaped
+  differently, and for gear the pair is often the variant itself), and `url` (the box's own page,
+  under the same `https://`-only rule as the pack's). All optional and additive; absent means the pack
+  did not say, never "unknown".
 - **`tone`** — knobs that are NOT model axes: see below.
 - **`blend`** — dry/wet mix knobs, the third kind of control: see below.
 - **`eq` stage** — the tone stack is ALWAYS software; this stage is optional author guidance for the

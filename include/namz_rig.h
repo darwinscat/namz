@@ -696,6 +696,11 @@ struct Stage
     // write later, and every reader writes a different one.
     int year = 0;
     std::string serialNumber, designedIn, madeIn;
+    // The BOX's page — the manufacturer's, the manual, whatever says what this thing is. Not the
+    // pack's page (Rig::url): one sends a reader to the pedal, the other to the capture of it, and a
+    // player draws them in different places. Same rule as the pack's: absolute https or the loader
+    // drops it, because a pack is a file from a stranger.
+    std::string gearUrl;
     // What this device sounds like AT ITS DEFAULT POSITION (mid-sweep gain — the combination a
     // player loads), on the ordered scale `clean < edge < crunch < hi-gain`. One honest label rather
     // than a range: both ends of a range are eyeballed anyway, and a range invites a player to fake
@@ -733,6 +738,16 @@ struct Rig
     // they are playing. Empty = the pack ships no picture. Additive: `schema` stays 3, and a reader
     // that does not know the key plays exactly as before.
     std::string picture;
+    // WHERE THIS PACK LIVES: its page, for a player that wants to send somebody to it — the release
+    // it came from, what it sounds like, the packs beside it. The PACK's address and not the box's:
+    // the pedal on the bench has a manufacturer's page too, and a reader handed a single `url` cannot
+    // tell "buy this pedal" from "get this pack", which are two different things to draw.
+    //
+    // ABSOLUTE https, and the loader drops everything else. A pack is a file from a stranger; a
+    // player that follows a `file://` or a `javascript:` out of one has handed that stranger the
+    // machine it is running on. Empty = the pack does not say where it came from. Additive: `schema`
+    // stays 3, and a reader that does not know the key plays exactly as before.
+    std::string url;
     std::vector<Stage> chain;                        // signal order
 
     // First stage the player can actually run (kind != Unknown), or nullptr.

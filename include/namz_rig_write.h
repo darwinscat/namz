@@ -56,6 +56,7 @@ inline std::map<std::string, std::string> stampMeta (const Rig& rig, const Stage
     // to another player still says which unit it came off, which is the whole point of stamping.
     if (stage.year > 0)             m["gear_year"]   = std::to_string (stage.year);
     if (! stage.serialNumber.empty()) m["gear_serial_number"] = stage.serialNumber;
+    if (! stage.gearUrl.empty())    m["gear_url"]    = stage.gearUrl;
     if (! stage.designedIn.empty()) m["designed_in"] = stage.designedIn;
     if (! stage.madeIn.empty())     m["made_in"]     = stage.madeIn;
     if (! stage.slot.empty())     m["slot"]       = stage.slot;
@@ -267,6 +268,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
     if (! rig.name.empty())      j["name"]       = rig.name;
     if (! rig.modeledBy.empty()) j["modeled_by"] = rig.modeledBy;
     if (! rig.picture.empty())   j["picture"]    = rig.picture;
+    if (! rig.url.empty())       j["url"]        = rig.url;
 
     auto chain = nlohmann::ordered_json::array();
     for (const auto& st : rig.chain)
@@ -287,6 +289,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             if (! st.serialNumber.empty()) g["serial_number"] = st.serialNumber;
             if (! st.designedIn.empty()) g["designed_in"] = st.designedIn;
             if (! st.madeIn.empty())     g["made_in"]     = st.madeIn;
+            if (! st.gearUrl.empty())    g["url"]         = st.gearUrl;
             sj["gear"] = std::move (g);
         }
         if (! st.toneType.empty()) sj["tone_type"] = st.toneType;
