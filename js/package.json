@@ -1,6 +1,6 @@
 {
   "name": "@darwins-cat/namz",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Lossless codec for NeuralAmpModeler .nam files — ~5.5x smaller, bit-exact float32, deterministic. Byte-identical to the C++ reference.",
   "type": "module",
   "exports": {

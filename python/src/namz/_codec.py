@@ -74,7 +74,9 @@ def _type_value(s: str) -> Union[bool, int, str]:
         return True
     if s == "false":
         return False
-    if s and all(c in "0123456789" for c in s):
+    # A LEADING ZERO keeps the value a string (NAMZ-FORMAT §metadata): "0012345" is an identifier and
+    # the zeros in front of it are part of what was stamped. Bare "0" is the quantity zero.
+    if s and all(c in "0123456789" for c in s) and (len(s) == 1 or s[0] != "0"):
         # int64 max is 19 digits; anything longer can't fit → keep as string (matches std::stoll
         # overflow). The length gate also avoids int()'s 4300-digit conversion limit on Python ≥ 3.11.
         if len(s) <= 19:

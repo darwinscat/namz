@@ -32,7 +32,8 @@ blob = namz.pack(nam)                 # -> .namz bytes
 assert namz.is_namz(blob)
 assert namz.unpack(blob) == nam       # lossless to float32
 
-# Stamp a readable metadata header (typed: "true"/"false" -> bool, digits -> int, else string):
+# Stamp a readable metadata header (typed: "true"/"false" -> bool, digits -> int, else string;
+# a leading zero keeps it a string, so an identifier such as "0012345" survives intact):
 opts = namz.PackOptions(metadata={"tone_type": "hi-gain", "boost": "true", "device": "tube:1,pnp:1"})
 blob = namz.pack(nam, opts)
 namz.read_meta(blob)   # {'tone_type': 'hi-gain', 'boost': 'true', 'device': 'tube:1,pnp:1'} — no weight decode

@@ -74,13 +74,17 @@ test("U+2028/U+2029 stay raw in strings (nlohmann parity, not escaped)", () => {
   assert.ok(!out.includes("\\u2028") && !out.includes("\\u2029"), "must not escape separators");
 });
 
-test("leading-zero metadata typed as int like std::stoll", () => {
+test("leading-zero metadata stays a string; bare zero is a number", () => {
   const blob = pack(enc('{"architecture":"X","weights":[1.0]}'), {
-    metadata: { count: "000000000000000000001", zeros: "0000" },
+    metadata: { count: "000000000000000000001", zeros: "0000", zero: "0", n: "42" },
   });
-  assert.equal(readMeta(blob).count, "1");
-  assert.equal(readMeta(blob).zeros, "0");
-  assert.ok(dec(unpack(blob)).includes('"count":1'), "integer in skeleton, not a string");
+  assert.equal(readMeta(blob).count, "000000000000000000001");
+  assert.equal(readMeta(blob).zeros, "0000");
+  assert.equal(readMeta(blob).zero, "0");
+  assert.equal(readMeta(blob).n, "42");
+  const out = dec(unpack(blob));
+  assert.ok(out.includes('"count":"000000000000000000001"'), "identifier stays a string in the skeleton");
+  assert.ok(out.includes('"zero":0') && out.includes('"n":42'), "real numbers still typed");
 });
 
 test("public API never throws on non-bytes input", () => {

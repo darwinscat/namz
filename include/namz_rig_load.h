@@ -125,6 +125,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
     rig.name      = detail::jstr (j, "name");
     rig.modeledBy = detail::jstr (j, "modeled_by");
     rig.picture   = detail::jstr (j, "picture");
+    // …and the pack's page only if it is one a player may follow (see Rig::url). Dropped, not
+    // refused: a manifest is not invalid because somebody put a local path in a display field, and a
+    // player that never sees the value cannot be talked into opening it.
+    if (const auto u = detail::jstr (j, "url"); u.rfind ("https://", 0) == 0) rig.url = u;
 
     const auto chainIt = j.find ("chain");
     if (chainIt == j.end() || ! chainIt->is_array()) return rig;   // no runnable chain
@@ -142,6 +146,11 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
             st.make     = detail::jstr (*g, "make");
             st.model    = detail::jstr (*g, "model");
             st.gearType = detail::jstr (*g, "type");
+            st.year       = detail::jint (*g, "year");
+            st.serialNumber = detail::jstr (*g, "serial_number");
+            st.designedIn = detail::jstr (*g, "designed_in");
+            st.madeIn     = detail::jstr (*g, "made_in");
+            if (const auto u = detail::jstr (*g, "url"); u.rfind ("https://", 0) == 0) st.gearUrl = u;
         }
         st.toneType = detail::jstr (sj, "tone_type");
         st.voicing  = detail::jstr (sj, "voicing");

@@ -43,9 +43,9 @@
 #define NAMZ_H
 
 #define NAMZ_VERSION_MAJOR 3
-#define NAMZ_VERSION_MINOR 2
+#define NAMZ_VERSION_MINOR 3
 #define NAMZ_VERSION_PATCH 0
-#define NAMZ_VERSION "3.2.0"
+#define NAMZ_VERSION "3.3.0"
 
 #include <cstddef>
 #include <cstdint>
@@ -69,7 +69,8 @@ struct PackOptions
 
     // Optional string fields to set/overwrite in the top-level `metadata` object before packing, and
     // mirror into the readable header block. Typed on the way in: "true"/"false" -> bool, all-digits ->
-    // integer, else string. Empty map = leave metadata untouched, no header block.
+    // integer, else string — except that a LEADING ZERO keeps the value a string, because "0012345" is
+    // an identifier and its zeros are part of it. Empty map = leave metadata untouched, no header block.
     std::map<std::string, std::string> metadata;
 };
 
@@ -163,11 +164,24 @@ namespace
     }
 
     // Type a metadata string for JSON: "true"/"false" -> bool, all-digits -> integer, else string.
+    //
+    // A LEADING ZERO IS NOT A DIGIT OF A QUANTITY. "0012345" is somebody's identifier — a serial
+    // number read off the back of a pedal, a catalogue code — and the zeros in front of it are part
+    // of what is stamped there. Typed to 12345 it comes back as a different string than the one that
+    // went in, and the same box then reads one way out of the manifest (where it is a string) and
+    // another out of its own file header. JSON says the same thing about its own literals — a number
+    // may not start with a redundant zero — so this keeps the typed value and the text agreeing.
+    // Bare "0" is the quantity zero and stays one.
+    //
+    // Decided by the VALUE, never by the key: this codec does not know which format is stamping it,
+    // and a list of field names in here would be one more thing to keep in sync with a header it has
+    // never heard of.
     json typeValue (const std::string& s)
     {
         if (s == "true")  return true;
         if (s == "false") return false;
-        if (! s.empty() && s.find_first_not_of ("0123456789") == std::string::npos)
+        if (! s.empty() && s.find_first_not_of ("0123456789") == std::string::npos
+            && (s.size() == 1 || s[0] != '0'))
         {
             try { return (std::int64_t) std::stoll (s); }
             catch (...) { return s; }   // too big for int64 -> keep as string

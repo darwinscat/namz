@@ -72,7 +72,7 @@ test("differential: targeted cases byte-identical", { skip: CLI ? false : "refer
   // U+2028 / U+2029 must stay raw (nlohmann does not escape them)
   const seps = String.fromCharCode(0x2028) + "y" + String.fromCharCode(0x2029);
   check(enc(`{"s":"a${seps}b","weights":[1.0]}`), true);
-  // leading-zero metadata must be typed by value, not string length
+  // leading-zero metadata stays a string on both sides — the zeros are part of an identifier
   check(enc('{"architecture":"X","weights":[0.5]}'), true, { count: "000000000000000000001", z: "0000" });
 });
 

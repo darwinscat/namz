@@ -557,10 +557,16 @@ int main()
     {
         Rig rig;
         rig.rigId = "dc-revolt-guitar"; rig.name = "ReVolt Guitar"; rig.modeledBy = "Darwin's Cat";
+        rig.url = "https://darwinscat.com/packs/revolt-guitar";        // the PACK's page, not the box's
 
         Stage nam;
         nam.kind = StageKind::Nam; nam.rawKind = "nam"; nam.slot = "preamp";
         nam.make = "Two Notes"; nam.model = "ReVolt Guitar"; nam.gearType = "pedal";
+        // THE PARTICULAR BOX. The serial keeps its leading zero — it is an identifier, and a header
+        // that types it to a number hands the reader a different serial than the one on the pedal.
+        nam.year = 1978; nam.serialNumber = "0012345";
+        nam.designedIn = "France"; nam.madeIn = "China";
+        nam.gearUrl = "https://two-notes.com/revolt";                  // the BOX's page, not the pack's
         nam.device.rigId = rig.rigId; nam.device.slot = nam.slot; nam.device.family = nam.model;
         nam.device.controls = parseControlsSpec ("channel:channel=green|red; boost:boost=off|on; gain:gain=0|150");
         nam.device.controls.back().sweep = 300;                       // the gain dial's rotation
@@ -612,12 +618,36 @@ int main()
         ok (valid, "written manifest is a valid orbitrig manifest");
         ok (back.rigId == rig.rigId && back.name == rig.name && back.modeledBy == rig.modeledBy,
             "rig identity round-trips");
+        ok (back.url == rig.url, "the pack's page round-trips");
+        // A pack comes from a stranger, and a player that follows what it says is running the
+        // stranger's choice of URL. Anything but absolute https is dropped — the manifest still
+        // loads, the field is simply not there to be opened.
+        for (const char* bad : { "file:///etc/passwd", "javascript:alert(1)", "http://darwinscat.com/p",
+                                 "//darwinscat.com/p", "HTTPS://darwinscat.com/p" })
+        {
+            auto j = nlohmann::json::parse (writeManifest (rig));
+            j["url"] = bad;
+            bool okFlag = false;
+            const auto loaded = loadRigManifest (j.dump(), &okFlag);
+            const auto what = std::string ("a player may not follow ") + bad;
+            ok (okFlag && loaded.url.empty(), what.c_str());
+            // …and the box's page is guarded by the same rule, in the same manifest
+            auto jg = nlohmann::json::parse (writeManifest (rig));
+            jg["chain"][0]["gear"]["url"] = bad;
+            const auto lg = loadRigManifest (jg.dump());
+            const auto whatG = std::string ("nor out of the gear block: ") + bad;
+            ok (! lg.chain.empty() && lg.chain[0].gearUrl.empty(), whatG.c_str());
+        }
         ok (back.chain.size() == 4, "all four stages round-trip");
         if (back.chain.size() == 4)
         {
             const auto& n = back.chain[0];
             ok (n.kind == StageKind::Nam && n.slot == "preamp" && n.make == "Two Notes"
                 && n.model == "ReVolt Guitar" && n.gearType == "pedal", "nam stage identity round-trips");
+            ok (n.year == 1978 && n.serialNumber == "0012345" && n.designedIn == "France"
+                && n.madeIn == "China", "the box's own history round-trips");
+            ok (n.gearUrl == "https://two-notes.com/revolt" && back.url != n.gearUrl,
+                "the box's page round-trips, and is not the pack's");
             ok (buildControlsSpec (n.device.controls) == buildControlsSpec (nam.device.controls),
                 "controls round-trip in order");
             ok (n.device.files.size() == 2 && n.device.files[1].id == "ReVolt-red-150.namz"
@@ -682,6 +712,10 @@ int main()
         ok (metas[0].meta.at ("rig_id") == "dc-revolt-guitar" && metas[0].meta.at ("slot") == "preamp"
             && metas[0].meta.at ("gear_make") == "Two Notes" && metas[0].meta.at ("modeled_by") == "Darwin's Cat",
             "stamped identity keys");
+        ok (metas[0].meta.at ("gear_year") == "1978" && metas[0].meta.at ("gear_serial_number") == "0012345"
+            && metas[0].meta.at ("designed_in") == "France" && metas[0].meta.at ("made_in") == "China"
+            && metas[0].meta.at ("gear_url") == "https://two-notes.com/revolt",
+            "the box's history is stamped into every file, serial spelled as written");
         ok (metas[0].meta.at ("settings.gain") == "0" && metas[0].meta.at ("boost") == "false",
             "stamped positions + the conventional boost flag");
         ok (metas[0].meta.at ("sweep.gain") == "300" && metas[0].meta.count ("sweep.channel") == 0,
