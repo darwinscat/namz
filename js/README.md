@@ -33,7 +33,8 @@ const blob = pack(nam);               // -> Uint8Array (.namz)
 isNamz(blob);                         // true
 new TextDecoder().decode(unpack(blob)); // '{"architecture":"WaveNet","weights":[0.5,-0.5,0.25]}'
 
-// Stamp a readable metadata header (typed: "true"/"false" -> bool, digits -> int, else string):
+// Stamp a readable metadata header (typed: "true"/"false" -> bool, digits -> int, else string;
+// a leading zero keeps it a string, so an identifier such as "0012345" survives intact):
 const withMeta = pack(nam, { metadata: { tone_type: "hi-gain", boost: "true", device: "tube:1,pnp:1" } });
 readMeta(withMeta); // { tone_type: 'hi-gain', boost: 'true', device: 'tube:1,pnp:1' } — no weight decode
 ```

@@ -58,6 +58,11 @@ to the usual `parse → NAM engine` path, so the loaded model is identical.
 ## The metadata header
 
 `pack` can stamp/overwrite display fields (typed: `true`/`false` → bool, all-digits → int, else string).
+A **leading zero keeps the value a string**: `0012345` is an identifier — a serial number, a catalogue
+code — and the zeros in front of it are part of what is stamped, so typing it to `12345` would hand the
+reader back a different string than the writer put in. JSON says as much about its own literals (a
+number may not start with a redundant zero); bare `0` is the quantity zero and stays one.
+
 The same set is mirrored into the small header block so a reader can pull it cheaply (`readMeta`) — no
 weight decode. Conventional fields:
 

@@ -159,15 +159,25 @@ int main()
         namz::PackOptions o;
         o.metadata["tone_type"] = "hi-gain"; o.metadata["boost"] = "true";
         o.metadata["stages"] = "16"; o.metadata["device"] = "tube:1,pnp:1";
+        // An identifier that happens to be spelled in digits: the zeros in front of it are part of it,
+        // and a serial number that comes back 12345 is not the number stamped on the box.
+        o.metadata["gear_serial_number"] = "0012345"; o.metadata["zero"] = "0";
         auto p = namz::pack (s.data(), s.size(), o);
         auto m = namz::readMeta (p.data(), p.size());
         CHECK (m["tone_type"] == "hi-gain", "meta string");
         CHECK (m["boost"] == "true", "meta bool -> text");
         CHECK (m["stages"] == "16", "meta int -> text");
         CHECK (m["device"] == "tube:1,pnp:1", "meta device");
+        CHECK (m["gear_serial_number"] == "0012345", "a leading zero survives the header");
+        CHECK (m["zero"] == "0", "bare zero is still a number");
         auto j = unpackToJson (p);
         CHECK (j["metadata"]["boost"].is_boolean() && j["metadata"]["boost"].get<bool>(), "boost typed bool in model");
         CHECK (j["metadata"]["stages"].get<int>() == 16, "stages typed int in model");
+        CHECK (j["metadata"]["gear_serial_number"].is_string()
+                   && j["metadata"]["gear_serial_number"].get<std::string>() == "0012345",
+               "a leading zero stays a string in the model");
+        CHECK (j["metadata"]["zero"].is_number_integer() && j["metadata"]["zero"].get<int>() == 0,
+               "bare zero typed int in the model");
         auto raw = makeNam ({ 1 }, { 2 }).dump();
         CHECK (namz::readMeta (raw.data(), raw.size()).empty(), "readMeta on raw JSON is empty");
     }

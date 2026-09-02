@@ -54,6 +54,26 @@ def test_read_meta_typed_fields():
     assert obj["metadata"]["tone_type"] == "hi-gain"
 
 
+def test_leading_zero_metadata_stays_a_string():
+    """An identifier spelled in digits keeps its zeros; a bare zero is still a number."""
+    src = b'{"architecture":"WaveNet","weights":[0.5]}'
+    opts = namz.PackOptions(
+        metadata={"gear_serial_number": "0012345", "zeros": "0000", "zero": "0", "n": "42"}
+    )
+    blob = namz.pack(src, opts)
+    assert namz.read_meta(blob) == {
+        "gear_serial_number": "0012345",
+        "zeros": "0000",
+        "zero": "0",
+        "n": "42",
+    }
+    obj = json.loads(namz.unpack(blob))
+    assert obj["metadata"]["gear_serial_number"] == "0012345"
+    assert obj["metadata"]["zeros"] == "0000"
+    assert obj["metadata"]["zero"] == 0
+    assert obj["metadata"]["n"] == 42
+
+
 def test_read_meta_empty_for_non_namz_and_v1():
     assert namz.read_meta(b"not a namz") == {}
     # v1 blob (formatVersion 1, no meta block) → empty

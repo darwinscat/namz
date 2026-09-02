@@ -75,20 +75,20 @@ function unshuffle(src, count) {
 }
 
 // Type a metadata string the way the reference typeValue does: "true"/"false" → bool, all-digits →
-// int64 (else string), else string.
+// int64 (else string), else string. A LEADING ZERO keeps it a string (NAMZ-FORMAT §metadata):
+// "0012345" is an identifier and the zeros in front of it are part of what was stamped. The pattern
+// below is JSON's own integer grammar, which forbids the redundant zero for the same reason.
 function typeValue(s) {
   if (s === "true") return true;
   if (s === "false") return false;
-  if (s.length > 0 && /^[0-9]+$/.test(s)) {
-    // Match std::stoll: it ignores leading zeros and types by VALUE, not string length. Strip zeros
-    // first (so "000…001" → 1), then only genuinely-too-big values stay strings.
-    const stripped = s.replace(/^0+/, "");
-    if (stripped === "") return NamNum.int(0n); // all zeros → 0
-    if (stripped.length <= 19) {
-      const v = BigInt(stripped);
+  if (/^(0|[1-9][0-9]*)$/.test(s)) {
+    // No leading zeros to strip any more, so the string's length IS the value's: 19 digits is where
+    // int64 ends, and anything past it stays a string (matches std::stoll overflow).
+    if (s.length <= 19) {
+      const v = BigInt(s);
       if (v <= INT64_MAX) return NamNum.int(v);
     }
-    return s; // too big for int64 → keep as string (matches std::stoll overflow)
+    return s;
   }
   return s;
 }
