@@ -52,6 +52,12 @@ inline std::map<std::string, std::string> stampMeta (const Rig& rig, const Stage
     if (! stage.make.empty())     m["gear_make"]  = stage.make;
     if (! stage.model.empty())    m["gear_model"] = stage.model;
     if (! stage.gearType.empty()) m["gear_type"]  = stage.gearType;
+    // The particular box, stamped per FILE too — a single .namz pulled out of the pack and handed
+    // to another player still says which unit it came off, which is the whole point of stamping.
+    if (stage.year > 0)             m["gear_year"]   = std::to_string (stage.year);
+    if (! stage.serialNumber.empty()) m["gear_serial_number"] = stage.serialNumber;
+    if (! stage.designedIn.empty()) m["designed_in"] = stage.designedIn;
+    if (! stage.madeIn.empty())     m["made_in"]     = stage.madeIn;
     if (! stage.slot.empty())     m["slot"]       = stage.slot;
     if (! rig.modeledBy.empty())  m["modeled_by"] = rig.modeledBy;
 
@@ -274,9 +280,13 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
         if (! st.make.empty() || ! st.model.empty() || ! st.gearType.empty())
         {
             nlohmann::ordered_json g;
-            if (! st.make.empty())     g["make"]  = st.make;
-            if (! st.model.empty())    g["model"] = st.model;
-            if (! st.gearType.empty()) g["type"]  = st.gearType;
+            if (! st.make.empty())       g["make"]  = st.make;
+            if (! st.model.empty())      g["model"] = st.model;
+            if (! st.gearType.empty())   g["type"]  = st.gearType;
+            if (st.year > 0)             g["year"]        = st.year;
+            if (! st.serialNumber.empty()) g["serial_number"] = st.serialNumber;
+            if (! st.designedIn.empty()) g["designed_in"] = st.designedIn;
+            if (! st.madeIn.empty())     g["made_in"]     = st.madeIn;
             sj["gear"] = std::move (g);
         }
         if (! st.toneType.empty()) sj["tone_type"] = st.toneType;

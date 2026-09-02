@@ -678,6 +678,24 @@ struct Stage
     std::string rawKind;                          // the original string (preserved for unknown kinds)
     std::string slot;                               // pedal | preamp | amp | poweramp | rig
     std::string make, model, gearType;              // gear caption
+    // THE PARTICULAR BOX, not the model. A capture is of one physical unit on one day, and these
+    // are what tell that unit apart from every other one wearing the same name: the year it was
+    // built and the serial number stamped on its back. A Big Muff says "Big Muff" on the enclosure across
+    // fifty years and a dozen circuits, so `model` alone identifies a family, never a device.
+    //
+    // Where it was drawn up and where it was screwed together, which for gear is often the variant
+    // itself — a Japanese TS808 and a Taiwanese one are different pedals under one name. Two fields
+    // rather than a sentence, because a reader that wants to say "Made in Japan" and a reader that
+    // wants to say "designed in France, made in China" need the same data shaped differently.
+    //
+    // All optional and all additive: `schema` stays 3, and a reader that does not know these keys
+    // plays exactly as before. Empty — or 0 for the year — means the pack did not say, never
+    // "unknown".
+    //
+    // The year is a NUMBER, not "2010" in a string: a numeral in text is a parser somebody has to
+    // write later, and every reader writes a different one.
+    int year = 0;
+    std::string serialNumber, designedIn, madeIn;
     // What this device sounds like AT ITS DEFAULT POSITION (mid-sweep gain — the combination a
     // player loads), on the ordered scale `clean < edge < crunch < hi-gain`. One honest label rather
     // than a range: both ends of a range are eyeballed anyway, and a range invites a player to fake

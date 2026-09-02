@@ -142,6 +142,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
             st.make     = detail::jstr (*g, "make");
             st.model    = detail::jstr (*g, "model");
             st.gearType = detail::jstr (*g, "type");
+            st.year       = detail::jint (*g, "year");
+            st.serialNumber = detail::jstr (*g, "serial_number");
+            st.designedIn = detail::jstr (*g, "designed_in");
+            st.madeIn     = detail::jstr (*g, "made_in");
         }
         st.toneType = detail::jstr (sj, "tone_type");
         st.voicing  = detail::jstr (sj, "voicing");
