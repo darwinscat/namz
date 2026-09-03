@@ -84,11 +84,14 @@ static Rig buildModel (const json& expected)
         {
             Tone me;
             me.name      = mx["name"].get<std::string>();
-            me.sweep     = mx["sweep"].get<int>();
+            me.sweep     = mx.contains ("sweep") ? mx["sweep"].get<int>() : 0;
             me.placement = mx["placement"].get<std::string>();
             me.reference = mx["reference"].get<std::string>();
             if (auto d = mx.find ("default"); d != mx.end()) me.defaultValue = d->get<std::string>();
-            for (const auto& [k, v] : mx["operating_point"].items()) me.operatingPoint[k] = v.get<std::string>();
+            // …and provenance is optional too: a knob may hold nothing while sweeping. Read
+            // unconditionally off a const json, a missing key here is undefined behaviour.
+            if (auto op = mx.find ("operating_point"); op != mx.end())
+                for (const auto& [k, v] : op->items()) me.operatingPoint[k] = v.get<std::string>();
             if (auto g = mx.find ("grid"); g != mx.end())      // positions only
             {
                 me.grid.fLo    = (*g)["f_lo"].get<double>();
@@ -111,10 +114,27 @@ static Rig buildModel (const json& expected)
                 for (const auto& px : *ps)
                 {
                     TonePosition p;
-                    p.value      = px["value"].get<std::string>();
-                    p.norm       = px["norm"].get<double>();
-                    p.levelDb    = px["level_db"].get<double>();   // same story as the indices above
-                    p.db         = px["db"].get<std::vector<double>>();
+                    p.value = px["value"].get<std::string>();
+                    // A SWITCH HAS NO ANGLE. Read unconditionally, a missing `norm` here was an assert in
+                    // a debug build and undefined behaviour in a release one — the harness could not have
+                    // held a switch fixture at all, which is why there was never one to hold.
+                    if (px.contains ("norm")) p.norm = px["norm"].get<double>();
+                    if (auto sx2 = px.find ("sections"); sx2 != px.end())
+                        for (const auto& b : *sx2)
+                        {
+                            PositionSection ps2;
+                            ok (sectionKindFrom (b["type"].get<std::string>(), ps2.kind), "fixture position band type is known");
+                            ps2.hz     = b["hz"].get<double>();
+                            ps2.q      = b["q"].get<double>();
+                            ps2.gainDb = b["gain_db"].get<double>();
+                            if (b.contains ("pivot")) ps2.pivot = b["pivot"].get<double>();
+                            p.sections.push_back (ps2);
+                        }
+                    else
+                    {
+                        p.levelDb = px["level_db"].get<double>();   // same story as the indices above
+                        p.db      = px["db"].get<std::vector<double>>();
+                    }
                     me.positions.push_back (std::move (p));
                 }
             if (auto ss = mx.find ("sections"); ss != mx.end())
@@ -142,7 +162,7 @@ static Rig buildModel (const json& expected)
         {
             Blend bl;
             bl.name          = bx["name"].get<std::string>();
-            bl.sweep         = bx["sweep"].get<int>();
+            bl.sweep         = bx.contains ("sweep") ? bx["sweep"].get<int>() : 0;
             bl.reference     = bx["reference"].get<std::string>();
             bl.dryEnd        = bx["dry_end"].get<std::string>();
             bl.defaultValue  = bx["default"].get<std::string>();
@@ -198,7 +218,8 @@ static void checkTone (const Stage& st, const json& sx, const char* via)
     {
         const auto& me = st.tone[i];
         const auto& mx = (*ms)[i];
-        ok (me.name == mx["name"].get<std::string>() && me.sweep == mx["sweep"].get<int>()
+        ok (me.name == mx["name"].get<std::string>()
+            && me.sweep == (mx.contains ("sweep") ? mx["sweep"].get<int>() : 0)
             && me.placement == mx["placement"].get<std::string>()
             && me.reference == mx["reference"].get<std::string>(), tag ("tone identity"));
         // Where the knob starts. A round trip that drops this is not detectably wrong — the field is
@@ -250,17 +271,35 @@ static void checkTone (const Stage& st, const json& sx, const char* via)
         }
 
         ok (me.sections.empty(), tag ("a positions knob carries no sections"));
-        ok (me.grid.points == mx["grid"]["points"].get<int>(), tag ("tone grid"));
+        // A knob that ships bands per position ships no curve, so it has no grid to describe one.
+        const bool bandsPerPosition = ! mx["positions"].empty() && mx["positions"][0].contains ("sections");
+        if (! bandsPerPosition)
+            ok (me.grid.points == mx["grid"]["points"].get<int>(), tag ("tone grid"));
+        else
+            ok (me.grid.points == 0, tag ("a bands-per-position knob carries no grid"));
         ok (me.positions.size() == mx["positions"].size(), tag ("tone position count"));
         if (me.positions.size() != mx["positions"].size()) continue;
         for (std::size_t p = 0; p < me.positions.size(); ++p)
         {
             const auto& got = me.positions[p];
             const auto& px  = mx["positions"][p];
-            ok (got.value == px["value"].get<std::string>() && got.norm == px["norm"].get<double>(),
+            ok (got.value == px["value"].get<std::string>()
+                && got.norm == (px.contains ("norm") ? px["norm"].get<double>() : 0.0),
                 tag ("tone position identity"));
-            ok (got.levelDb == px["level_db"].get<double>(), tag ("tone position level"));
-            ok (got.db == px["db"].get<std::vector<double>>(), tag ("tone curve"));
+            if (auto sx2 = px.find ("sections"); sx2 != px.end())
+            {
+                ok (got.sections.size() == sx2->size() && got.db.empty(), tag ("position band count"));
+                for (std::size_t b = 0; b < got.sections.size() && b < sx2->size(); ++b)
+                    ok (got.sections[b].hz == (*sx2)[b]["hz"].get<double>()
+                        && got.sections[b].q == (*sx2)[b]["q"].get<double>()
+                        && got.sections[b].gainDb == (*sx2)[b]["gain_db"].get<double>(),
+                        tag ("position band"));
+            }
+            else
+            {
+                ok (got.levelDb == px["level_db"].get<double>(), tag ("tone position level"));
+                ok (got.db == px["db"].get<std::vector<double>>(), tag ("tone curve"));
+            }
         }
     }
 

@@ -6,6 +6,56 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.0.0] — 2026-09-03 — a switch has an order, not an angle
+
+Breaking: the rig manifest's `schema` is now **4**. A schema-3 reader meets a knob shipping bands per
+position, finds no `grid`, never reads its positions and drops the knob — the author declared bands and
+the pack would play the reference, silently. That is the failure the number exists to catch.
+
+### Added
+- **`positions[].sections`** — a knob that CLICKS, stating each filter. A switch's positions are named,
+  ordered, and have nothing in between them, so there is no rotation for a band's gain to travel on:
+  each position states the filter it IS (`type`, `hz`, `q`, `gain_db`, and `pivot` on a tilt), and
+  nothing is computed between two of them. The reference position ships `"sections": []` — spelled out,
+  because "flat here" is a statement and a missing key is an omission, and the two must not look alike.
+  Switch-only: a dial has a travel law, and two laws for one control is two products.
+  - The travel keys `range_db` / `hz_at` / `q_at` are **forbidden** inside a position's band and the
+    manifest is refused over them, rather than read with the key ignored: a reader that ignored one
+    would play a fixed band where the producer thought it wrote a travelling one.
+  - A band this reader cannot build drops the **knob**, never one band — half a pedal is a different
+    pedal, while the reference position is what dropping a tone knob has always meant.
+  - Between two positions the CHAIN may change shape, so a player must not ramp band *k*'s coefficients
+    from one position's to the next's: build the new cascade beside the old one and cross-fade the output.
+
+### Changed
+- **`norm` exists only where rotation exists.** A switch has an order and no angle; until now it shipped
+  evenly spaced steps — `i/(n−1)`, a number nobody measured — in a field that promises a measurement.
+  A switch now carries none, its array order is the panel's order, and a position is addressed by its
+  `value`, never by its place in the array. `norm` present without a `sweep`, or absent with one, is an
+  **invalid manifest**: absent and `0.0` are one value in a reader's number, so the rule cannot be a
+  convention. The same test catches a `"sweep": 300.0` typo, which used to read as no sweep at all and
+  turn a 300° dial into a stepper without a word. Applies to `blend` positions identically.
+- **A switch blend states both gains at every position**, or the knob is dropped. Between two detents
+  there is nothing to derive from, and a reader's defaults — silent dry, unity wet — are the reference
+  itself, so a middle position that said nothing played as full wet: a hundred per cent wrong at a
+  setting the panel offers.
+- **`reference` must appear in `positions[]`**, and a knob whose anchor is missing is dropped: without
+  that row a player interpolates between neighbours exactly where the knob must be silent, and the
+  models already carry that tone, so it lands twice. A **one-position** tone knob is dropped for the
+  same family of reasons — its only position is the anchor, which is flat by construction, so the
+  control cannot change a sound.
+- **`default` on a switch must name a position**, or it is dropped and the knob opens at its reference:
+  a pack cannot open on a setting the knob does not have. A dial keeps whatever angle it states.
+- **`grid` and `trusted` are for knobs that ship a curve.** A bands-per-position knob carries neither:
+  `trusted` is stated in grid indices, and a reader meeting a collapsed band ("tested, a filter
+  nowhere") on a knob with no grid reads it as a verdict on bands it should have played.
+
+### Fixed
+- The rig conformance harness read `norm`, `sweep` and `operating_point` unconditionally off a const
+  JSON — an assert in a debug build and undefined behaviour in a release one. It could not have held a
+  switch fixture at all, which is why there had never been one. `rig-measured` now ships one: `edge`,
+  a two-position switch shipping bands.
+
 ## [3.3.0] — 2026-09-02 — a capture is of one box, and the box has a page
 
 ### Added

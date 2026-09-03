@@ -39,6 +39,15 @@
           { "type": "low_shelf", "hz": 167.0, "q": 0.58, "range_db": [-12.0, 6.0], "hz_at": [120.0, 240.0], "q_at": [0.5, 0.7] },
           { "type": "tilt", "hz": 1077.0, "q": 0.65, "pivot": 0.35, "range_db": [-3.0, 1.5] }
         ]
+      },
+      {
+        "name": "edge",
+        "placement": "post",
+        "reference": "sharp",
+        "positions": [
+          { "value": "sharp", "sections": [] },
+          { "value": "smooth", "sections": [ { "type": "high_shelf", "hz": 10000.0, "q": 0.8, "gain_db": -9.0 } ] }
+        ]
       }
     ],
     "blend": [

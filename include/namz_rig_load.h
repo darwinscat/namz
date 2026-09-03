@@ -15,6 +15,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,24 @@ namespace detail
             || ! (*it)[0].is_number() || ! (*it)[1].is_number()) return false;
         a = (*it)[0].get<double>();
         b = (*it)[1].get<double>();
+        return true;
+    }
+
+    // ONE BAND OF A POSITION — a switch's `positions[].sections`. false = not a band this reader can
+    // build (unknown `type`, no frequency, no Q, a gain that is not a number), and then the whole KNOB
+    // is unusable, exactly as for a dial's travelling bands: playing the bands understood and dropping
+    // the rest is a different pedal. The travel keys are not read here and must not be present; the
+    // caller refuses the manifest over them, because a stop on a knob that has no travel is a claim
+    // about the hardware, not a stray field a reader may quietly ignore.
+    inline bool readPositionSection (const nlohmann::json& j, PositionSection& out)
+    {
+        if (! sectionKindFrom (jstr (j, "type"), out.kind)) return false;
+        out.hz     = jnum (j, "hz");
+        out.q      = jnum (j, "q");
+        out.gainDb = jnum (j, "gain_db");
+        if (! (out.hz > 0.0) || ! (out.q > 0.0) || ! std::isfinite (out.gainDb)) return false;
+        // Only a tilt hinges, and a hinge outside its own span is not a hinge.
+        out.pivot = out.kind == SectionKind::Tilt ? std::min (1.0, std::max (0.0, jnum (j, "pivot", 0.5))) : 0.5;
         return true;
     }
 
@@ -248,26 +268,81 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         me.grid.fHi    = detail::jnum (*g, "f_hi", 20000.0);
                         me.grid.points = detail::jint (*g, "points");
                     }
-                    // `positions`: a position IS its curve — `db`, exactly `grid.points` numbers. One with
-                    // no curve, or a curve of the wrong length (a non-number in it counts as a hole), is
-                    // unusable and SKIPPED, not padded and not truncated; a knob with no grid, or with
-                    // no position left after that, is dropped. NAMZ-FORMAT.md has said so since 2.0.0;
-                    // the loader let all of it through, and the reader downstream was left to discover a
-                    // short curve by indexing past it.
-                    if (auto ps = mj.find ("positions"); ps != mj.end() && ps->is_array() && me.grid.points > 0)
+                    // WHICH FORM THIS KNOB IS IN, read from the keys once and then carried in `shape`
+                    // so that nothing downstream decides it again by counting empty vectors. A position
+                    // stating both its curve and its bands is the same "two descriptions, two products"
+                    // the knob-level refusal above names, and is refused the same way.
+                    const auto ps = mj.find ("positions");
+                    const bool hasPositions = ps != mj.end() && ps->is_array();
+                    bool anyBands = false, anyCurve = false;
+                    if (hasPositions)
+                        for (const auto& pj : *ps)
+                        {
+                            if (! pj.is_object()) continue;
+                            const bool bands = pj.contains ("sections"), curve = pj.contains ("db");
+                            if (bands && curve) { if (ok) *ok = false; return Rig {}; }
+                            anyBands = anyBands || bands;
+                            anyCurve = anyCurve || curve;
+                        }
+                    if (anyBands && anyCurve) { if (ok) *ok = false; return Rig {}; }
+                    const bool asPosSections = anyBands;
+                    // ROTATION EXISTS OR IT DOES NOT, and `norm` must say the same as `sweep`. In a
+                    // double, absent and 0.0 are one value — 0.0 being a legal dial norm, no sentinel is
+                    // available — so a producer rewriting a switch would resurrect the evenly spaced
+                    // steps schema 4 deleted. The same test catches a `"sweep": 300.0` typo, which reads
+                    // as no sweep at all and used to turn a 300° dial into a stepper without a word.
+                    if (hasPositions)
+                        for (const auto& pj : *ps)
+                            if (pj.is_object() && pj.contains ("norm") != (me.sweep > 0))
+                            { if (ok) *ok = false; return Rig {}; }
+                    // Bands stated per position are what a knob with NO rotation says. A dial states a
+                    // travel law instead; allowing it both would leave two readers to answer differently
+                    // what happens between two detents, which is the failure this format names as its own.
+                    if (asPosSections && me.sweep > 0)
+                    { if (ok) *ok = false; return Rig {}; }
+
+                    // `positions`: a curve position IS its curve — `db`, exactly `grid.points` numbers.
+                    // One with no curve, or a curve of the wrong length (a non-number in it counts as a
+                    // hole), is unusable and SKIPPED, not padded and not truncated; a knob with no grid,
+                    // or with no position left after that, is dropped. A hole is a condition the producer
+                    // is asked about and approves (the capture app puts "Export with holes?" on screen),
+                    // and no position is ADDRESSED by its place in the array — a position is addressed by
+                    // its `value` — so a missing one costs that position and nothing else.
+                    bool usable = true;
+                    if (hasPositions && (asPosSections || me.grid.points > 0))
                         for (const auto& pj : *ps)
                         {
                             if (! pj.is_object()) continue;
                             TonePosition p;
                             p.value      = detail::jstr (pj, "value");
                             p.label      = detail::jstr (pj, "label");
-                            p.norm       = detail::jnum (pj, "norm");
-                            p.levelDb    = detail::jnum (pj, "level_db");
-                            if (auto db = pj.find ("db"); db != pj.end() && db->is_array())
-                                for (const auto& v : *db)
-                                    if (v.is_number()) p.db.push_back (v.get<double>());
-                            if (! p.value.empty() && (int) p.db.size() == me.grid.points)
-                                me.positions.push_back (std::move (p));
+                            if (me.sweep > 0) p.norm = detail::jnum (pj, "norm");
+                            if (asPosSections)
+                            {
+                                const auto sx = pj.find ("sections");
+                                if (sx == pj.end() || ! sx->is_array()) { usable = false; break; }
+                                for (const auto& b : *sx)
+                                {
+                                    // A travel key here is a claim about a stop this knob does not have.
+                                    if (b.is_object() && (b.contains ("range_db") || b.contains ("hz_at")
+                                                          || b.contains ("q_at")))
+                                    { if (ok) *ok = false; return Rig {}; }
+                                    PositionSection sc;
+                                    if (! b.is_object() || ! detail::readPositionSection (b, sc)) { usable = false; break; }
+                                    p.sections.push_back (sc);
+                                }
+                                if (! usable) break;
+                                if (! p.value.empty()) me.positions.push_back (std::move (p));
+                            }
+                            else
+                            {
+                                p.levelDb = detail::jnum (pj, "level_db");
+                                if (auto db = pj.find ("db"); db != pj.end() && db->is_array())
+                                    for (const auto& v : *db)
+                                        if (v.is_number()) p.db.push_back (v.get<double>());
+                                if (! p.value.empty() && (int) p.db.size() == me.grid.points)
+                                    me.positions.push_back (std::move (p));
+                            }
                         }
                     // `sections`: every band must be readable, or the KNOB is unusable — a band a reader
                     // cannot build (a `type` it does not know, no frequency, no `range_db`) is not skipped
@@ -276,7 +351,6 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // knob has always meant. The travel law runs on rotation, t = f(reference / sweep):
                     // a switch (no sweep), or a reference that is not a position on that dial, leaves it
                     // nothing to run on, so such a knob cannot carry sections either.
-                    bool usable = true;
                     if (auto ss = mj.find ("sections"); ss != mj.end() && ss->is_array())
                         for (const auto& sx : *ss)
                         {
@@ -289,6 +363,35 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         const int ref = detail::degrees (me.reference);
                         if (me.sweep <= 0 || ref < 0 || ref > me.sweep) usable = false;
                     }
+                    // THE ANCHOR MUST BE ON THE KNOB. Everything a `positions` knob says is stated
+                    // against `reference`; without that row in the list a player has nothing to make flat,
+                    // and it interpolates between neighbours exactly where the knob must be silent — the
+                    // models already carry that tone, so it would land a second time.
+                    // DROPPED, not refused: whether the anchor was never named or was named and its row
+                    // did not survive the rules above, every reader applying those rules sees the same
+                    // list, so there is nothing here for two readers to disagree about — this knob simply
+                    // cannot be played, and a dropped tone knob means the captured position plays.
+                    if (usable && ! me.positions.empty())
+                    {
+                        bool found = false;
+                        for (const auto& p : me.positions) if (p.value == me.reference) { found = true; break; }
+                        if (! found) usable = false;
+                    }
+                    // `default` is only where the knob OPENS. On a SWITCH it must name a position, or the
+                    // pack opens on a value the knob does not have — flat, while the panel shows a word
+                    // that is not there. Dropped rather than fatal: without it a player starts at the
+                    // reference, which is what every knob promises anyway. A DIAL keeps whatever degree it
+                    // states: any angle in its travel is playable, swept or not.
+                    if (me.sweep <= 0 && ! me.defaultValue.empty() && ! me.positions.empty())
+                    {
+                        bool found = false;
+                        for (const auto& p : me.positions) if (p.value == me.defaultValue) { found = true; break; }
+                        if (! found) me.defaultValue.clear();
+                    }
+                    // A knob with ONE position is its own reference and nothing else, and a reference is
+                    // flat by construction: it cannot change a sound. Drawn, it is a control that invites
+                    // a hand and answers nothing.
+                    if (me.sections.empty() && me.positions.size() < 2) usable = false;
                     if (usable && ! me.name.empty() && (me.positions.empty() != me.sections.empty()))
                         st.tone.push_back (std::move (me));
                 }
@@ -333,19 +436,36 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     if (auto d = bj.find ("dry"); d != bj.end() && d->is_array())
                         for (const auto& v : *d)
                             if (v.is_number()) bl.dryDb.push_back (v.get<double>());
+                    // THE SAME ROTATION RULE AS `tone`: a switch has an order and no angle, so `norm`
+                    // is present exactly where `sweep` is, and a manifest that says otherwise is refused
+                    // rather than read — absent and 0.0 are one value in a double, and a blend read one
+                    // position off is a mix nobody chose.
+                    bool blendOk = true;
                     if (auto ps = bj.find ("positions"); ps != bj.end() && ps->is_array())
+                    {
+                        for (const auto& pj : *ps)
+                            if (pj.is_object() && pj.contains ("norm") != (bl.sweep > 0))
+                            { if (ok) *ok = false; return Rig {}; }
                         for (const auto& pj : *ps)
                         {
                             if (! pj.is_object()) continue;
                             BlendPosition p;
                             p.value = detail::jstr (pj, "value");
                             p.label = detail::jstr (pj, "label");
-                            p.norm  = detail::jnum (pj, "norm");
+                            if (bl.sweep > 0) p.norm = detail::jnum (pj, "norm");
+                            // A SWITCH STATES BOTH GAINS AT EVERY POSITION OR IT SHIPS NOTHING. Between
+                            // two detents there is nothing to derive from, and the defaults below —
+                            // silent dry, unity wet — are the REFERENCE: a middle position that said
+                            // nothing would play as full wet, a hundred per cent wrong at a setting the
+                            // panel offers. A dial may lean on its law; a switch has no law to lean on.
+                            if (bl.sweep <= 0 && ! (pj.contains ("dry_db") && pj.contains ("wet_db")))
+                            { blendOk = false; break; }
                             p.dryDb = detail::jnum (pj, "dry_db", -120.0);
                             p.wetDb = detail::jnum (pj, "wet_db");
                             if (! p.value.empty()) bl.positions.push_back (std::move (p));
                         }
-                    if (! bl.name.empty() && ! bl.positions.empty()) st.blend.push_back (std::move (bl));
+                    }
+                    if (blendOk && ! bl.name.empty() && ! bl.positions.empty()) st.blend.push_back (std::move (bl));
                 }
         }
         else if (st.kind == StageKind::Ir)
