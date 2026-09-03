@@ -167,7 +167,7 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
 
 ```json
 {
-  "format": "orbitrig", "schema": 3,
+  "format": "orbitrig", "schema": 4,
   "rig_id": "dc-ts9", "name": "Golden Drive", "modeled_by": "Darwin's Cat",
   "picture": "device.webp", "url": "https://darwinscat.com/packs/golden-drive",
   "chain": [
