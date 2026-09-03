@@ -388,7 +388,8 @@ int main()
         // Junk entries are dropped, not half-loaded: no name / no positions = nothing to apply.
         const auto junk = loadRigManifest (R"({"format":"orbitrig","chain":[{"kind":"nam",
             "tone":[{"sweep":300},{"name":"tone"},
-                    {"name":"ok","grid":{"points":1},"positions":[{"value":"0","db":[0.0]}]}]}]})");
+                    {"name":"ok","reference":"a","grid":{"points":1},
+                     "positions":[{"value":"a","db":[0.0]},{"value":"b","db":[-1.0]}]}]}]})");
         ok (junk.chain.size() == 1 && junk.chain[0].tone.size() == 1
             && junk.chain[0].tone[0].name == "ok", "nameless / empty tone entries dropped");
         ok (junk.chain.size() == 1 && junk.chain[0].tone.size() == 1
@@ -400,18 +401,21 @@ int main()
         {
             const auto r = loadRigManifest (R"({"format":"orbitrig","chain":[{"kind":"nam","tone":[
                 {"name":"nogrid","sweep":300,"reference":"300",
-                 "positions":[{"value":"0","db":[0,-6]},{"value":"300","db":[0,0]}]},
+                 "positions":[{"value":"0","norm":0.0,"db":[0,-6]},{"value":"300","norm":1.0,"db":[0,0]}]},
                 {"name":"short","sweep":300,"reference":"300","grid":{"points":3},
-                 "positions":[{"value":"0","db":[0,-6]},{"value":"150","db":[0,-3,-9]},{"value":"300"},
-                              {"value":"200","db":[0,"x",-4]},{"value":"250","db":[0,-1,-2,-3]}]},
+                 "positions":[{"value":"0","norm":0.0,"db":[0,-6]},{"value":"150","norm":0.5,"db":[0,-3,-9]},
+                              {"value":"300","norm":1.0,"db":[0,0,0]},
+                              {"value":"200","norm":0.667,"db":[0,"x",-4]},
+                              {"value":"250","norm":0.833,"db":[0,-1,-2,-3]}]},
                 {"name":"none","sweep":300,"reference":"300","grid":{"points":3},
-                 "positions":[{"value":"0","db":[0]}]}
+                 "positions":[{"value":"0","norm":0.0,"db":[0]},{"value":"300","norm":1.0,"db":[0]}]}
             ]}]})");
             ok (r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].name == "short",
                 "a knob with no grid, and one with no usable position, are dropped");
-            ok (r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].positions.size() == 1
-                && r.chain[0].tone[0].positions[0].value == "150",
-                "short, missing, holed and overlong curves are skipped; the exact one stays");
+            ok (r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].positions.size() == 2
+                && r.chain[0].tone[0].positions[0].value == "150"
+                && r.chain[0].tone[0].positions[1].value == "300",
+                "short, missing, holed and overlong curves are skipped; the exact ones stay");
         }
     }
 
@@ -509,6 +513,125 @@ int main()
                  "a reference past the sweep: unusable");
         dropped (R"({"name":"x","sweep":300,"reference":"0","sections":[]})",
                  "an empty sections array is a knob with neither form: dropped");
+    }
+
+    // --- TONE, the third form: `positions[].sections` — a knob that CLICKS, stating each filter ----
+    // A switch's positions are named, ordered and have nothing in between them, so there is no rotation
+    // for a band's gain to travel on. Each position says the filter it IS. Everything below exists
+    // because the alternative was writing an evenly spaced `norm` — a number nobody measured — into a
+    // field that promises a measurement, and then reading it back as if it were one.
+    {
+        auto manifestWith = [] (const std::string& toneJson) {
+            return std::string (R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"pedal",
+                "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","300"]}],
+                "files":[{"file":"a.namz","settings":{"gain":"0"}}],
+                "tone":[)") + toneJson + "]}]}";
+        };
+        const std::string edge = R"({"name":"Edge","placement":"post","reference":"Sharp",
+            "positions":[{"value":"Sharp","sections":[]},
+                         {"value":"Smooth","sections":[{"type":"high_shelf","hz":10000,"q":0.8,"gain_db":-9.0}]}]})";
+        bool valid = false;
+        const auto rig = loadRigManifest (manifestWith (edge), &valid);
+        ok (valid && rig.chain.size() == 1 && rig.chain[0].tone.size() == 1, "a switch shipping bands parses");
+        if (rig.chain.size() == 1 && rig.chain[0].tone.size() == 1)
+        {
+            const auto& me = rig.chain[0].tone[0];
+            ok (me.sweep == 0 && me.sections.empty() && me.positions.size() == 2,
+                "no rotation, no knob-level bands: the description lives on the positions");
+            ok (me.positions[0].value == "Sharp" && me.positions[0].sections.empty()
+                && me.positions[0].db.empty(),
+                "the anchor states nothing, because at the anchor the models already are the sound");
+            ok (me.positions[1].sections.size() == 1
+                && me.positions[1].sections[0].kind == SectionKind::HighShelf
+                && me.positions[1].sections[0].hz == 10000.0
+                && me.positions[1].sections[0].q == 0.8
+                && me.positions[1].sections[0].gainDb == -9.0,
+                "…and the other position states its filter whole: shape, corner, Q and what it is worth");
+            ok (me.positions[0].norm == 0.0 && me.positions[1].norm == 0.0,
+                "nothing invented an angle on the way in");
+        }
+        // WRITTEN BACK AS IT CAME. The empty list at the anchor is the case a reader deciding the form
+        // by counting empty vectors gets wrong: it would write that position back as a curve position,
+        // or drop the key, and the knob would mean something else on the next pass.
+        {
+            const auto text = writeManifest (loadRigManifest (manifestWith (edge)));
+            ok (text.find (R"("value": "Sharp", "sections": [])") != std::string::npos,
+                "the anchor's empty band list survives the round trip, spelled out");
+            ok (text.find ("\"norm\"") == std::string::npos, "a switch is written without a norm");
+            ok (text.find ("\"grid\"") == std::string::npos && text.find ("\"trusted\"") == std::string::npos,
+                "…and without a grid or a trusted band: it ships no curve for either to describe");
+            bool again = false;
+            const auto twice = writeManifest (loadRigManifest (text, &again));
+            ok (again && twice == text, "write(load(write(x))) is a fixed point, byte for byte");
+        }
+
+        // REFUSED WHOLE — the manifest says something two readers would resolve differently.
+        auto refused = [&] (const std::string& toneJson, const char* what) {
+            bool v = true;
+            const auto r = loadRigManifest (manifestWith (toneJson), &v);
+            ok (! v && r.chain.empty(), what);
+        };
+        refused (R"({"name":"x","reference":"a","positions":[{"value":"a","norm":0.0,"sections":[]},
+                                                            {"value":"b","norm":1.0,"sections":[{"type":"bell","hz":800,"q":1.0,"gain_db":-3.0}]}]})",
+                 "a switch carrying `norm` is refused: absent and 0.0 are one value, so a rewrite would resurrect it");
+        refused (R"({"name":"x","sweep":300,"reference":"0","grid":{"points":2},
+                     "positions":[{"value":"0","db":[0,-6]},{"value":"300","norm":1.0,"db":[0,0]}]})",
+                 "a dial position without `norm` is refused: read as 0.0 it plays the wrong rung, silently");
+        refused (R"({"name":"x","reference":"a","grid":{"points":2},
+                     "positions":[{"value":"a","sections":[]},
+                                  {"value":"b","db":[0,-6],"sections":[{"type":"bell","hz":800,"q":1.0,"gain_db":-3.0}]}]})",
+                 "a position stating both its curve and its bands is two descriptions: refused, like a knob that does");
+        refused (R"({"name":"x","reference":"a","grid":{"points":2},
+                     "positions":[{"value":"a","sections":[]},{"value":"b","db":[0,-6]}]})",
+                 "…and so is a knob whose positions disagree about which form they are in");
+        refused (R"({"name":"x","reference":"a",
+                     "positions":[{"value":"a","sections":[]},
+                                  {"value":"b","sections":[{"type":"bell","hz":800,"q":1.0,"gain_db":-3.0,"range_db":[-3.0,3.0]}]}]})",
+                 "a travel key inside a position's band is a stop this knob does not have: refused");
+        refused (R"({"name":"x","sweep":300,"reference":"0",
+                     "positions":[{"value":"0","norm":0.0,"sections":[]},
+                                  {"value":"300","norm":1.0,"sections":[{"type":"bell","hz":800,"q":1.0,"gain_db":-3.0}]}]})",
+                 "a DIAL may not state bands per position: it has a travel law, and two laws is two products");
+
+        // DROPPED — this knob cannot be played, and a dropped tone knob means the captured position plays.
+        auto dropped = [&] (const std::string& toneJson, const char* what) {
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (toneJson), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.empty(), what);
+        };
+        dropped (R"({"name":"x","reference":"a",
+                     "positions":[{"value":"a","sections":[]},
+                                  {"value":"b","sections":[{"type":"moog_ladder","hz":800,"q":1.0,"gain_db":-3.0}]}]})",
+                 "a band this reader cannot build drops the KNOB, not one band: half a pedal is a different pedal");
+        dropped (R"({"name":"x","reference":"c",
+                     "positions":[{"value":"a","sections":[]},
+                                  {"value":"b","sections":[{"type":"bell","hz":800,"q":1.0,"gain_db":-3.0}]}]})",
+                 "a reference that names no position leaves nothing to be flat at: the knob goes");
+        dropped (R"({"name":"x","reference":"a","positions":[{"value":"a","sections":[]}]})",
+                 "one position is its own anchor and cannot change a sound: not a knob, dropped");
+
+        // A BLEND THAT CLICKS. Between two detents there is nothing to derive from, and the loader's
+        // defaults are the reference itself — so a position that says nothing would play as full wet.
+        {
+            auto withBlend = [] (const std::string& blendJson) {
+                return std::string (R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"pedal",
+                    "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","300"]}],
+                    "files":[{"file":"a.namz","settings":{"gain":"0"}}],
+                    "blend":[)") + blendJson + "]}]}";
+            };
+            bool v = false;
+            const auto r = loadRigManifest (withBlend (
+                R"({"name":"mix","reference":"wet","dry_end":"dry","grid":{"points":2},"dry":[0,-3],
+                    "positions":[{"value":"dry","dry_db":0.0,"wet_db":-120.0},{"value":"wet","wet_db":0.0}]})"), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].blend.empty(),
+                "a switch blend position that states only one gain drops the knob: silence would have meant full wet");
+            const auto ok2 = loadRigManifest (withBlend (
+                R"({"name":"mix","reference":"wet","dry_end":"dry","grid":{"points":2},"dry":[0,-3],
+                    "positions":[{"value":"dry","dry_db":0.0,"wet_db":-120.0},{"value":"wet","dry_db":-120.0,"wet_db":0.0}]})"));
+            ok (ok2.chain.size() == 1 && ok2.chain[0].blend.size() == 1
+                && ok2.chain[0].blend[0].positions.size() == 2,
+                "…and one that states both at every position is a blend");
+        }
     }
 
     // --- THE SCHEMA GATE — written with the format, read by nobody, tested for the first time here --
@@ -775,7 +898,9 @@ int main()
         bass.sections = { { SectionKind::LowShelf, 167.0, 0.58, -12.0, 6.0, 0.5, 120.0, 240.0, 0.5, 0.7 } };
         Tone tone;
         tone.name = "tone"; tone.sweep = 300; tone.reference = "300"; tone.grid.points = 8;
-        tone.positions = { { "0", {}, 0.0, -5.15, { -0.2, -0.2, -0.4, -0.9, -3.2, -9.4, -16.8, -24.1 } } };
+        // …and its anchor row, without which the knob has nothing to be flat at and is dropped.
+        tone.positions = { { "0",   {}, 0.0, -5.15, { -0.2, -0.2, -0.4, -0.9, -3.2, -9.4, -16.8, -24.1 } },
+                           { "300", {}, 1.0,  0.0,  { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 } } };
         st.tone = { bass, tone };
         rig.chain = { st };
         const auto text = writeManifest (rig);

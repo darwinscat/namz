@@ -334,11 +334,22 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             auto tone = nlohmann::ordered_json::array();
             for (const auto& me : st.tone)
             {
-                if (me.name.empty() || (me.positions.empty() && me.sections.empty())) continue;
+                if (me.name.empty()) continue;
+                // THE FORM IS SAID, NOT COUNTED (Tone::shape). A switch's reference position ships an
+                // empty band list on purpose, so "which vector is empty" cannot decide the form without
+                // rewriting that position into something else on the next pass.
                 const bool asSections = ! me.sections.empty();
+                bool asPosSections = false;
+                for (const auto& p : me.positions) if (! p.sections.empty()) { asPosSections = true; break; }
+                const bool asCurves = ! asSections && ! asPosSections;
+                if (asSections ? me.sections.empty() : me.positions.empty()) continue;
                 // …and a `sections` knob with no sweep is one the reader drops on sight (the travel law
                 // runs on rotation), so writing it would only make a pack that loses a knob in transit.
                 if (asSections && me.sweep <= 0) continue;
+                // Its mirror: bands stated PER POSITION are what a knob with no rotation says instead.
+                // A dial has a travel law and says it that way; letting it use both would leave two
+                // readers to disagree about what happens between two detents.
+                if (asPosSections && me.sweep > 0) continue;
                 nlohmann::ordered_json mj;
                 mj["name"] = me.name;
                 if (me.sweep > 0)            mj["sweep"]     = me.sweep;
@@ -358,7 +369,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // The grid and the curves travel together or not at all: a curve without the grid it
                 // was sampled on cannot be applied to anything — and a grid without curves says nothing,
                 // so a `sections` knob carries none.
-                if (! asSections && me.grid.points > 0)
+                if (asCurves && me.grid.points > 0)
                 {
                     nlohmann::ordered_json g;
                     g["f_lo"]   = me.grid.fLo;
@@ -371,7 +382,11 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // six fields that were always the same six values (whole grid, span 0, levels 1).
                 // Absence is the shorter way to say "never tested"; an empty band with levels >= 2
                 // still ships, because "tested and failed everywhere" is a different statement.
-                if (me.trusted.levels >= 2)
+                // …and NOT on a knob that ships no curve at all: `trusted` is stated in grid indices, and
+                // a reader that meets a collapsed band ("tested, a filter nowhere") on a knob with no grid
+                // reads it as a verdict on bands it should have played. A dial's `sections` keeps it —
+                // there it is provenance of the ladder the bands were fitted to, and readers know it.
+                if (me.trusted.levels >= 2 && ! asPosSections)
                 {
                     nlohmann::ordered_json t;
                     t["lo_hz"]    = me.trusted.loHz;
@@ -416,9 +431,32 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                         nlohmann::ordered_json pj;
                         pj["value"]    = p.value;
                         if (! p.label.empty()) pj["label"] = p.label;
-                        pj["norm"]     = p.norm;
-                        pj["level_db"] = p.levelDb;
-                        pj["db"]       = p.db;
+                        // ROTATION, and only where rotation exists. A switch's positions have an order
+                        // and no angle; the evenly spaced steps written here until schema 4 were a number
+                        // nobody measured, sitting in a field that promises a measurement.
+                        if (me.sweep > 0) pj["norm"] = p.norm;
+                        if (asPosSections)
+                        {
+                            // ALWAYS the key, even empty: at the reference the knob is flat by
+                            // construction, and "flat here" is what the empty list says out loud.
+                            auto bands = nlohmann::ordered_json::array();
+                            for (const auto& sc : p.sections)
+                            {
+                                nlohmann::ordered_json x;
+                                x["type"]    = sectionKindToString (sc.kind);
+                                x["hz"]      = sc.hz;
+                                x["q"]       = sc.q;
+                                x["gain_db"] = sc.gainDb;
+                                if (sc.kind == SectionKind::Tilt) x["pivot"] = sc.pivot;
+                                bands.push_back (std::move (x));
+                            }
+                            pj["sections"] = std::move (bands);
+                        }
+                        else
+                        {
+                            pj["level_db"] = p.levelDb;
+                            pj["db"]       = p.db;
+                        }
                         positions.push_back (std::move (pj));
                     }
                     mj["positions"] = std::move (positions);
@@ -473,7 +511,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                     nlohmann::ordered_json pj;
                     pj["value"]  = p.value;
                     if (! p.label.empty()) pj["label"] = p.label;
-                    pj["norm"]   = p.norm;
+                    if (bl.sweep > 0) pj["norm"] = p.norm;   // rotation, and only where rotation exists
                     pj["dry_db"] = p.dryDb;
                     pj["wet_db"] = p.wetDb;
                     bp.push_back (std::move (pj));

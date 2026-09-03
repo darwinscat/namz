@@ -9,13 +9,20 @@ Golden Drive        pedal, tone_type "crunch"
   gain              a DIAL: sweep 300°, captured at 0 / 150 / 300 → three models
   tone              TONE, `positions`: linear, never captured — six swept positions shipped as a curve
   bass              TONE, `sections`: the same kind of knob, shipped as two parametric bands
+  edge              TONE, a SWITCH shipping bands: two named positions, each stating its own filter
 ```
 
-A player does two different things with those two knobs:
+A player does two different things with the first two knobs:
 
 - **gain** is in `controls` — turning it SELECTS a file (`m01…m03`);
 - **tone** and **bass** are in `tone` — turning them changes nothing about which file plays; the player builds a
-  filter from `positions[]` (tone) or from `sections[]` (bass) and applies it after the stage. Interpolating
+  filter from `positions[]` (tone) or from `sections[]` (bass) and applies it after the stage.
+
+**edge** is the third form and the reason this fixture grew one: a knob with no rotation at all. It has
+no `sweep` and therefore no `norm` anywhere — its positions have an order and no angle — and each
+position states the filter it IS. Its reference, `sharp`, ships `"sections": []`: at the anchor the
+models already are the sound, and the empty list says so out loud. A player picks the position whose
+`value` matches and interpolates nothing, because a switch has nothing in between. Interpolating
   between positions is what makes the first a continuous knob out of six measurements; the second is
   continuous by construction — its bands' gain runs with the dial.
 

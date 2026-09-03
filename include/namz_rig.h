@@ -85,8 +85,15 @@ using Settings = std::map<std::string, std::string>;
 // knob as parametric bands instead of a table. Had it stayed at 2, a schema-2 reader would have found no
 // `measured` key and played every tone knob flat, silently; at 3 it refuses. `measured` is not read at
 // all — no pack with it was ever published.
+// Bumped to 4 when a knob that CLICKS learned to ship bands: `positions[].sections`, a filter stated
+// whole at each position, with no travel law because a switch has no rotation to travel on. A schema-3
+// reader meets such a knob, finds no `grid`, never reads the positions (its loader gates them on
+// `grid.points > 0`), and drops the knob as one carrying neither form — the author declared bands and
+// the pack plays the reference, silently. That is the same failure 2→3 was raised for. The same bump
+// carries the two rules that make the form honest: `norm` exists only where rotation exists, and a
+// blend's per-position gains are stated rather than derived from an array index.
 // See NAMZ-FORMAT.md.
-inline constexpr int kRigSchema = 3;
+inline constexpr int kRigSchema = 4;
 
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
@@ -461,13 +468,64 @@ struct EqHints
 // refuses the whole manifest rather than picking one: two descriptions of one knob is two products.
 // ---------------------------------------------------------------------------------------------
 
+// One parametric band of a `sections` knob: RBJ cookbook shapes, the same formulas NAMZ-FORMAT.md
+// spells out so that a curve designed on the capture side and a biquad run on the player side describe
+// one filter.
+enum class SectionKind { LowShelf, Bell, HighShelf, Tilt };
+
+inline const char* sectionKindToString (SectionKind k)
+{
+    switch (k)
+    {
+        case SectionKind::LowShelf:  return "low_shelf";
+        case SectionKind::Bell:      return "bell";
+        case SectionKind::HighShelf: return "high_shelf";
+        case SectionKind::Tilt:      return "tilt";
+    }
+    return "";
+}
+
+// false for a `type` this reader does not know — and then the whole knob is unusable, not just the
+// band: playing the bands you understand and dropping the one you don't is a different pedal, whereas
+// playing the reference position (no bands at all) is the one thing every tone knob promises to be.
+inline bool sectionKindFrom (const std::string& s, SectionKind& out)
+{
+    if (s == "low_shelf")  { out = SectionKind::LowShelf;  return true; }
+    if (s == "bell")       { out = SectionKind::Bell;      return true; }
+    if (s == "high_shelf") { out = SectionKind::HighShelf; return true; }
+    if (s == "tilt")       { out = SectionKind::Tilt;      return true; }
+    return false;
+}
+
+// ONE BAND A POSITION IS — what a knob that CLICKS says instead of a travel law. A switch's positions
+// are named, ordered, and have nothing in between them, so there is no rotation for a gain to travel
+// on: each position states the filter it IS, whole, against `reference` (which is flat by construction
+// and therefore states nothing). The rotating twin is `Section` below and keeps the travel fields;
+// a `range_db` here would be a stop this knob does not have, and an `hz_at` a journey it never makes.
+struct PositionSection
+{
+    SectionKind kind = SectionKind::Bell;
+    double hz = 0.0;             // centre (bell) or corner (shelf, tilt) AT THIS POSITION, Hz
+    double q  = 0.0;             // …and its Q here
+    double gainDb = 0.0;         // what the band is worth here, signed, against the reference
+    double pivot = 0.5;          // tilt only, exactly as in Section
+};
+
 struct TonePosition
 {
-    std::string value;           // the dial position, degrees ("0" … "300")
+    std::string value;           // the position: degrees ("0" … "300") on a dial, a word ("Sharp") on a switch
     std::string label;           // optional display name ("Scooped") — the producer knows it, a reader cannot
-    double norm       = 0.0;     // 0..1 across the sweep, ASCENDING across positions[]
+    // ROTATION, and only where rotation exists: 0..1 across the sweep, ASCENDING across positions[].
+    // A SWITCH does not have it and does not write it — a switch's positions have an order and no
+    // angle, and the evenly spaced steps that used to be written here were a number nobody measured,
+    // stated in a field that promises a measurement. On a switch the ARRAY ORDER is the order, said by
+    // the producer, and a reader that wants 0..1 for a widget computes it while drawing.
+    double norm       = 0.0;
     double levelDb    = 0.0;     // the curve's broadband level over the trusted band, dB
     std::vector<double> db;      // the measured response against the reference, dB per grid point
+    // …or, instead of that curve, the bands this position IS (a switch shipping as bands). Exclusive
+    // with `db`: a position states one description of itself, for the same reason a knob does.
+    std::vector<PositionSection> sections;
 };
 
 // The log-spaced frequency grid `TonePosition::db` is sampled on. points == 0 → a `positions` knob is
@@ -519,35 +577,6 @@ struct ToneTrust
                                               // is only as strong as its weakest position
 };
 
-// One parametric band of a `sections` knob: RBJ cookbook shapes, the same formulas NAMZ-FORMAT.md
-// spells out so that a curve designed on the capture side and a biquad run on the player side describe
-// one filter.
-enum class SectionKind { LowShelf, Bell, HighShelf, Tilt };
-
-inline const char* sectionKindToString (SectionKind k)
-{
-    switch (k)
-    {
-        case SectionKind::LowShelf:  return "low_shelf";
-        case SectionKind::Bell:      return "bell";
-        case SectionKind::HighShelf: return "high_shelf";
-        case SectionKind::Tilt:      return "tilt";
-    }
-    return "";
-}
-
-// false for a `type` this reader does not know — and then the whole knob is unusable, not just the
-// band: playing the bands you understand and dropping the one you don't is a different pedal, whereas
-// playing the reference position (no bands at all) is the one thing every tone knob promises to be.
-inline bool sectionKindFrom (const std::string& s, SectionKind& out)
-{
-    if (s == "low_shelf")  { out = SectionKind::LowShelf;  return true; }
-    if (s == "bell")       { out = SectionKind::Bell;      return true; }
-    if (s == "high_shelf") { out = SectionKind::HighShelf; return true; }
-    if (s == "tilt")       { out = SectionKind::Tilt;      return true; }
-    return false;
-}
-
 // The band's KIND is fixed; its GAIN moves with the dial, and where stated, its frequency and Q drift
 // toward what they are at the two stops. Everything is anchored at `reference`, the position the takes
 // were shot at, where the band's gain is zero by definition — so a knob left at the reference is flat,
@@ -591,16 +620,24 @@ struct Tone
                                               // an END of travel, so it is the wrong thing to reach for
     ToneGrid grid;                            // positions only: what `db[]` is sampled on
     ToneTrust trusted;
-    // EXACTLY ONE of the two below is non-empty — the writer emits one, the reader refuses a manifest
-    // carrying both for one knob, and a knob with neither is dropped (nothing to apply).
+    // ONE FORM PER KNOB, and the form is WHAT THE KNOB HOLDS — no separate word to keep in step with
+    // the data. The one case emptiness cannot answer alone is a switch's REFERENCE position, whose band
+    // list is empty ON PURPOSE ("flat here" is a statement, not an omission): the knob's form is read
+    // from its OTHER positions, which is why a switch whose every position is flat is not a form at all
+    // but a knob that cannot change a sound, and is dropped. The writer emits the one `shape` names; the reader refuses a manifest that
+    // carries two for one knob and drops a knob that carries none. Two descriptions of one knob is two
+    // products: whichever a reader picked, another could pick the other.
     //
-    // `positions`: ASCENDING by `norm`. Sorted by the producer so a player can index and lerp with no
-    // search, no sort and no defence: a declared order like "300,240,…,0" is a normal way to write a
-    // knob that reads 10 to 0, and it used to ship descending norms straight into readers that assume
-    // otherwise.
+    // `positions` on a DIAL: ASCENDING by `norm`, sorted by the producer so a player can index and lerp
+    // with no search, no sort and no defence — a declared order like "300,240,…,0" is a normal way to
+    // write a knob that reads 10 to 0, and it used to ship descending norms straight into readers that
+    // assume otherwise. On a SWITCH there is no norm to sort by: the array order IS the panel order, it
+    // is the producer's statement, and nothing addresses a position by its place in it — a position is
+    // addressed by its `value`, always, so a list that loses a position loses only that position.
     std::vector<TonePosition> positions;
     // `sections`: the knob as bands, applied in series; magnitude-only filters, so their order is
-    // immaterial. Needs a `sweep` — the travel law is stated in rotation, and a switch has none.
+    // immaterial. Needs a `sweep` — the travel law is stated in rotation, and a switch has none. A
+    // switch says the same thing per position instead (TonePosition::sections, ToneShape above).
     std::vector<Section> sections;
 };
 

@@ -1,5 +1,5 @@
 {
-  "format": "orbitrig", "schema": 3,
+  "format": "orbitrig", "schema": 4,
   "rig_id": "namz-golden-rig", "name": "Golden Amp", "modeled_by": "namz conformance",
   "chain": [
     {
