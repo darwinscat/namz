@@ -177,6 +177,7 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
                 "designed_in": "Japan", "made_in": "Japan",
                 "url": "https://darwinscat.com/gear/golden-drive" },
       "tone_type": "crunch",
+      "input_db": -3.0, "output_db": -12.0,
       "controls": [
         { "name": "gain", "role": "gain", "sweep": 300, "values": ["0","150","300"] }
       ],
@@ -208,6 +209,23 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
   `ir` (a linear cabinet impulse — future), or `eq` (a software tone stack — see below). A player
   that meets a `kind` it doesn't know **skips that stage** rather than failing, so new stage types
   never break old players. `slot` (`pedal`/`preamp`/`amp`/`poweramp`/`rig`) routes the stage.
+  - `input_db` — the pack's working point: how much softer or harder the guitar reaching THIS WHOLE
+    device is, signed dB, absent = 0. It changes the SOUND and not the volume — less signal into a
+    non-linear network is less drive — and a player applies it before anything splits, the dry side of
+    a `blend` knob included: there is one guitar, and it cannot arrive at the two ends of a mix at two
+    different levels. It ADDS to `files[].input_db`, which keeps the meaning it has below — the trim of
+    one alias against its neighbour. What reaches the model is the two of them together.
+  - `output_db` — the level this pack leaves at, signed dB, absent = 0, so packs can be balanced
+    against one another: a Big Muff comes out some 12 dB louder than a clean preamp, and a boost is
+    hotter still than the preamp it feeds. Volume only, and applied LAST in the stage — AFTER the
+    dry/wet mix. One number for the whole stage: applied before the mix it would ride the wet side
+    alone and move a blend the player was told to hold.
+
+  Neither key bumps `schema`, which stays 4. They are additive, so a reader that has not met them
+  plays exactly as it plays today — that is the status quo and not a regression. Packs written before
+  them, where a device's level was spread across `files[].input_db`, keep playing correctly for the
+  same reason: a reader sums the stage level with the file level, and in those packs the stage level
+  is simply absent.
 - **`files`** — the authoritative list for a `nam` stage: each entry is a model + its `settings`.
   (A manifest-less folder is read by scanning `*.namz` instead.) An entry may also carry:
   - `input_db` — how much SOFTER the signal reaching this model is, dB (absent = 0). A device may

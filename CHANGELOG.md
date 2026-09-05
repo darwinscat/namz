@@ -6,6 +6,26 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.1.0] — 2026-09-05 — a level belongs to the pack, not to its files
+
+### Added
+- **`chain[].input_db` / `chain[].output_db`** — the two levels a pack states about itself. Inside a
+  pack the models are balanced against each other (±0.4 dB across a matrix); between packs they are
+  not — a Big Muff leaves some 12 dB louder than a clean preamp, and a boost is hotter still than the
+  preamp it feeds. That difference had nowhere to live but `files[].input_db`, which made one key mean
+  two things at once: the working point of a DEVICE and the trim of one alias against its neighbour.
+  - `input_db` is the level of the GUITAR into the whole device. It changes the SOUND rather than the
+    volume — less signal into a non-linear network is less drive — and a player applies it before
+    anything splits, the dry side of a `blend` knob included: there is one guitar, and it cannot reach
+    the two ends of a mix at two different levels.
+  - `output_db` is the level the device leaves at, so packs can be balanced against one another. Volume
+    only, and applied LAST in the stage — after the dry/wet mix. One number for the whole stage:
+    applied before the mix it would ride the wet side alone and move a blend the player was told to hold.
+  - Both are signed dB, both optional, **absent = 0**, and both ADD to `files[].input_db`, which keeps
+    the meaning it has always had. `schema` stays **4**: the keys are additive, so a reader that has not
+    met them plays exactly as it plays today, and a pack written before them — its device level spread
+    across the files — keeps playing correctly, because the stage level it lacks reads as 0.
+
 ## [4.0.0] — 2026-09-03 — a switch has an order, not an angle
 
 Breaking: the rig manifest's `schema` is now **4**. A schema-3 reader meets a knob shipping bands per

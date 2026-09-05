@@ -295,6 +295,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
         if (! st.toneType.empty()) sj["tone_type"] = st.toneType;
         if (! st.voicing.empty())  sj["voicing"]   = st.voicing;
         if (! st.circuit.empty())  sj["circuit"]   = st.circuit;
+        // The pack's own levels, rounded and dropped at zero exactly as `files[].input_db` is below:
+        // a manifest somebody reads should not carry `"input_db": 0.0` on every stage that has none.
+        if (st.inputDb  < -0.0005 || st.inputDb  > 0.0005) sj["input_db"]  = std::round (st.inputDb  * 100.0) / 100.0;
+        if (st.outputDb < -0.0005 || st.outputDb > 0.0005) sj["output_db"] = std::round (st.outputDb * 100.0) / 100.0;
 
         if (st.kind == StageKind::Nam)
         {

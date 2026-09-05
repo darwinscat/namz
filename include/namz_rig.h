@@ -755,6 +755,27 @@ struct Stage
     // Per FILE the same string ships under the header's long-standing `device` key; here it is named
     // `circuit` because a stage's `device` is already its selectable matrix.
     std::string circuit;
+    // THE PACK'S OWN LEVELS, and the reason they do not live on the files. Inside a pack the models
+    // are balanced against each other (±0.4 dB across a matrix); between packs they are not — a Big
+    // Muff leaves some 12 dB louder than a clean preamp, and a boost is hotter still than the preamp
+    // it feeds. That difference belongs to the DEVICE, so it is stated once here instead of being
+    // spread across every `FileEntry::inputDb`, where it would make one key mean two things at once.
+    //
+    // `inputDb` is the level of the GUITAR going into this device — signed dB, minus = softer. It is
+    // the working point, so it changes the SOUND rather than the volume: less signal into a non-linear
+    // network is less drive. A player applies it before anything splits, the dry side of a blend knob
+    // included — there is one guitar, and it cannot reach the two ends of a mix at two different
+    // levels. It ADDS to `FileEntry::inputDb`, which stays what it has always been: the trim of one
+    // alias against its neighbour.
+    //
+    // `outputDb` is the level this device leaves at, so packs can be balanced against one another.
+    // Volume only. A player applies it LAST in the stage, after the dry/wet mix: it is one number for
+    // the whole stage, and applied before the mix it would ride the wet side alone and move the blend.
+    //
+    // Both optional, both absent = 0, and `schema` stays 4 — a reader that does not know them plays
+    // exactly as it plays today.
+    double inputDb  = 0.0;
+    double outputDb = 0.0;
     Device device;                                  // Nam: controls + files (the selectable matrix)
     std::vector<Tone> tone;                         // Nam: linear knobs shipped as DSP, not as axes
     std::vector<Blend> blend;                       // Nam: dry/wet mix knobs — the player mixes, see above

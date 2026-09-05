@@ -175,6 +175,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
         st.toneType = detail::jstr (sj, "tone_type");
         st.voicing  = detail::jstr (sj, "voicing");
         st.circuit  = detail::jstr (sj, "circuit");
+        // The pack's own levels. Absent is 0, and so is a value that is not a number: the keys are
+        // additive, and a manifest does not become unplayable for spelling one of them badly.
+        if (auto g = sj.find ("input_db");  g != sj.end() && g->is_number()) st.inputDb  = g->get<double>();
+        if (auto g = sj.find ("output_db"); g != sj.end() && g->is_number()) st.outputDb = g->get<double>();
 
         if (st.kind == StageKind::Nam)
         {

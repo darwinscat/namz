@@ -952,6 +952,62 @@ int main()
         ok (stampMeta (rig, st, { { "gain", "0" } }).count ("boost") == 0, "no boost control → no boost key");
     }
 
+    // --- the pack's own levels: `chain[].input_db` and `chain[].output_db` ----------------------
+    {
+        Rig rig;
+        rig.rigId = "dc-lvl"; rig.name = "Levels";
+        Stage st; st.kind = StageKind::Nam; st.slot = "pedal";
+        st.toneType = "crunch";
+        st.inputDb = -3.5; st.outputDb = -12.0;
+        st.device.files.push_back ({ "a.namz", { { "gain", "0" } }, -6.0 });
+        rig.chain.push_back (st);
+
+        bool valid = false;
+        const auto text = writeManifest (rig);
+        const auto back = loadRigManifest (text, &valid);
+        ok (valid && back.chain.size() == 1 && back.chain[0].inputDb == -3.5
+            && back.chain[0].outputDb == -12.0, "the stage's two levels round-trip");
+        // The device's level and one alias's trim are different numbers with different jobs, and
+        // separating them is the whole reason these keys exist: writing one must not touch the other.
+        ok (back.chain.size() == 1 && back.chain[0].device.files.size() == 1
+            && back.chain[0].device.files[0].inputDb == -6.0,
+            "…and `files[].input_db` keeps its own value beside them");
+        ok (text.find ("\"tone_type\"") < text.find ("\"input_db\": -3.5")
+            && text.find ("\"input_db\": -3.5") < text.find ("\"files\""),
+            "both are stage keys, written where the format documents them");
+
+        // Zero is how the format spells absence, so a manifest somebody reads does not carry
+        // `"output_db": 0.0` on every stage that never had a level.
+        Rig plain = rig;
+        plain.chain[0].inputDb = 0.0; plain.chain[0].outputDb = 0.0;
+        const auto quiet = writeManifest (plain);
+        ok (quiet.find ("\"output_db\"") == std::string::npos, "no output level, no key");
+        ok (quiet.find ("\"input_db\"") == quiet.rfind ("\"input_db\""),
+            "…and the only `input_db` left is the file's own");
+
+        // A pack written before these keys existed: the device's level was spread across its files,
+        // and it must keep playing exactly as it did — stage levels absent, therefore 0.
+        auto j = nlohmann::json::parse (text);
+        j["chain"][0].erase ("input_db");
+        j["chain"][0].erase ("output_db");
+        bool okOld = false;
+        const auto old = loadRigManifest (j.dump(), &okOld);
+        ok (okOld && old.chain.size() == 1 && old.chain[0].inputDb == 0.0 && old.chain[0].outputDb == 0.0,
+            "a manifest from before the keys loads, and both levels read 0");
+        ok (okOld && old.chain.size() == 1 && old.chain[0].device.files.size() == 1
+            && old.chain[0].device.files[0].inputDb == -6.0,
+            "…with the file trim it always had still in place");
+
+        // A level that is not a number is not a refusal: the keys are additive, and a pack does not
+        // stop playing because one of them was spelled badly.
+        j["chain"][0]["input_db"]  = "-3.5";
+        j["chain"][0]["output_db"] = nlohmann::json::object();
+        bool okJunk = false;
+        const auto junk = loadRigManifest (j.dump(), &okJunk);
+        ok (okJunk && junk.chain.size() == 1 && junk.chain[0].inputDb == 0.0 && junk.chain[0].outputDb == 0.0,
+            "a level that is not a number reads as 0, and the manifest still loads");
+    }
+
     std::printf (failures == 0 ? "ALL RIG TESTS PASSED\n" : "%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }
