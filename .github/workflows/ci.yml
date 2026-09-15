@@ -15,7 +15,7 @@ permissions:
 # One live run per branch or pull request: a push on top of a push cancels the run it
 # replaced instead of finishing it against code nobody will merge.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
