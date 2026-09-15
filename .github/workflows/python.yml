@@ -10,6 +10,12 @@ on:
   pull_request:
     paths: ["python/**", "conformance/**", ".github/workflows/python.yml"]
 
+# One live run per branch or pull request: a push on top of a push cancels the run it
+# replaced instead of finishing it against code nobody will merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: python
@@ -18,6 +24,7 @@ jobs:
   test:
     name: test (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -27,7 +34,7 @@ jobs:
           - os: ubuntu-latest
             python-version: "3.11"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -40,8 +47,9 @@ jobs:
     name: build sdist + wheel
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -60,6 +68,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/python-v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: pypi
     permissions:
       id-token: write
