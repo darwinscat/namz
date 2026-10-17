@@ -220,6 +220,11 @@ struct FileEntry
     // measured: a player that crossfades must measure for itself, and a stage where some entries carry
     // it and some do not is not measured either.
     std::optional<int> lagSamples;
+    // HOW THIS MODEL WAS TRAINED: the epochs its weights have, and the ESR (error-to-signal ratio, lower
+    // is closer) the trainer reported for it. Written by the capture side from its own records, for a
+    // person reading the pack; a player plays the same either way. Not stated = not known.
+    std::optional<int> epochs;
+    std::optional<double> esr;
 };
 
 struct Device
