@@ -6,6 +6,15 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.2.0] — 2026-10-17 — a file says how it was trained
+
+### Added
+- **`files[].epochs` / `files[].esr`** — how each model was trained: the epochs its weights have and
+  the ESR the trainer reported for it, written by the capture side from its own records so a person
+  reading the pack can see it. A player plays the same either way. Both optional, absent = not known;
+  a value of the wrong kind is dropped by the reader. `schema` stays **4**: the keys are additive, so a
+  reader that has not met them plays exactly as before.
+
 ## [4.1.0] — 2026-09-05 — a level belongs to the pack, not to its files
 
 ### Added

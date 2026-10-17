@@ -676,6 +676,26 @@ int main()
         }
     }
 
+    // --- `epochs` / `esr`: how a model was trained, stated or not known -----------------------------
+    {
+        const std::string text = R"({"format":"orbitrig","schema":4,"chain":[{"kind":"nam","slot":"pedal",
+            "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","150"]}],
+            "files":[{"file":"a.namz","settings":{"gain":"0"}},
+                     {"file":"b.namz","settings":{"gain":"150"},"epochs":800,"esr":0.0103228},
+                     {"file":"c.namz","settings":{"gain":"150"},"epochs":800.5,"esr":-0.1},
+                     {"file":"d.namz","settings":{"gain":"150"},"epochs":-5,"esr":"0.01"}]}]})";
+        const auto r = loadRigManifest (text);
+        ok (r.chain.size() == 1 && r.chain[0].device.files.size() == 4, "four files");
+        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 4)
+        {
+            const auto& f = r.chain[0].device.files;
+            ok (! f[0].epochs && ! f[0].esr, "no keys = not known, not zero");
+            ok (f[1].epochs == 800 && f[1].esr == 0.0103228, "a whole number of epochs and an ESR are read");
+            ok (! f[2].epochs && ! f[2].esr, "half an epoch and a negative ESR are not statements: not read");
+            ok (! f[3].epochs && ! f[3].esr, "negative epochs and an ESR in a string are not read either");
+        }
+    }
+
     // --- WRITER (namz_rig_write.h): load(write(rig)) == rig for every carried field -------------
     {
         Rig rig;
@@ -697,6 +717,8 @@ int main()
                              { "ReVolt-red-150.namz",   { { "channel", "red" },   { "boost", "off" }, { "gain", "150" } } } };
         nam.device.files[0].lagSamples = 0;                           // the reference: measured, and zero
         nam.device.files[1].lagSamples = -3;                          // three samples EARLIER than it
+        nam.device.files[0].epochs = 800;                             // how the first was trained;
+        nam.device.files[0].esr    = 0.0103228;                       // the second does not say
 
         Tone tone;                                                // a linear knob: DSP, not an axis
         tone.name = "tone"; tone.sweep = 300; tone.reference = "300";
@@ -778,6 +800,9 @@ int main()
             ok (n.device.controls.back().sweep == 300, "the dial's sweep round-trips");
             ok (n.device.files.size() == 2 && n.device.files[0].lagSamples == 0 && n.device.files[1].lagSamples == -3,
                 "each file's lag round-trips, the reference's zero included");
+            ok (n.device.files.size() == 2 && n.device.files[0].epochs == 800 && n.device.files[0].esr == 0.0103228
+                && ! n.device.files[1].epochs && ! n.device.files[1].esr,
+                "how each file was trained round-trips, and a file that does not say stays silent");
             ok (n.tone.size() == 2 && n.tone[0].name == "tone" && n.tone[0].sweep == 300
                 && n.tone[0].reference == "300" && n.tone[0].placement == "post"
                 && n.tone[0].operatingPoint.at ("gain") == "150",

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -226,6 +227,14 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // An integer, or nothing: a lag of 2.5 samples is not a reading this format speaks.
                     if (auto l = fj.find ("lag_samples"); l != fj.end() && l->is_number_integer())
                         fe.lagSamples = l->get<int>();
+                    // How it was trained: a whole, non-negative number of epochs, and an ESR that is a
+                    // finite number not below zero. Anything else is not a statement this format makes.
+                    if (auto e = fj.find ("epochs"); e != fj.end() && e->is_number_unsigned()
+                            && e->get<unsigned long long>() <= static_cast<unsigned long long> (std::numeric_limits<int>::max()))
+                        fe.epochs = static_cast<int> (e->get<unsigned long long>());
+                    if (auto e = fj.find ("esr"); e != fj.end() && e->is_number()
+                            && std::isfinite (e->get<double>()) && e->get<double>() >= 0.0)
+                        fe.esr = e->get<double>();
                     if (! fe.id.empty()) st.device.files.push_back (std::move (fe));
                 }
 

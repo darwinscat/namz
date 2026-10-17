@@ -240,6 +240,12 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     it measured (the first file's own is 0); a player delays each model by the largest lag minus its
     own, so any pair sums in phase. Absent = not measured: a player that crossfades must measure for
     itself, and a stage where some entries carry it and some do not is not measured either.
+  - `epochs` / `esr` — how this model was trained: the number of epochs its weights have (a
+    non-negative integer) and the ESR — error-to-signal ratio, lower is closer — the trainer reported
+    for it (a number, 0 or more). Written by the capture side from its own records, for a person reading
+    the pack; a player plays the same either way. Each is independent, and absent = not known. A value
+    of the wrong kind (`800.5` epochs, a negative ESR, a string) is not a statement: a reader drops it.
+    Additive — `schema` stays 4.
 - **`picture`** — the file name, in the pack root, of the device's photograph (`"device.webp"`), for
   players that draw the box they are playing: a cut-out — background removed, alpha kept — scaled and
   encoded (WebP) by the capture side at export; a player only draws it. Optional and additive:
