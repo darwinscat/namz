@@ -10,6 +10,11 @@
 // engine computes (zero quality loss). Everything except the weight arrays (architecture/config/metadata)
 // is preserved verbatim in a JSON skeleton.
 //
+// On explicit request (PackOptions::dtype = DtypeF16) the weights are stored as IEEE-754 binary16 instead —
+// half the payload, and LOSSY: each weight's float32 rounded to the nearest half. The conventional name of
+// such a file is `.nam16z`, so the loss shows in the name; every reader goes by the dtype byte, never by a
+// name, and widens each half back to float32 exactly. Everything said below of "lossless" is float32's.
+//
 // The float bytes are byte-plane SHUFFLED but NOT otherwise compressed (codec = store). The shuffle is
 // free and helps whatever OUTER compressor sees the file (an installer's LZMA, git's packing); an inner
 // deflate there is redundant, and storing raw keeps `.namz` DETERMINISTIC and byte-identical across
@@ -27,7 +32,10 @@
 // (`decode` hands out a parsed skeleton), and every translation unit that includes it must see the SAME
 // nlohmann/json, configured the same way (JSON_DIAGNOSTICS and the rest), as the one that defines
 // NAMZ_IMPLEMENTATION: `decode`'s mangled name carries no nlohmann type, so a mismatch is no link error —
-// it links silently against a `Decoded` of another layout. Endianness: integer fields are written little-endian
+// it links silently against a `Decoded` of another layout. For the same reason every such translation unit
+// must see the same VERSION of namz.h as that one: 4.4.0 added `PackOptions::dtype`, and `pack`'s mangled
+// name did not change, so an older header's smaller `PackOptions` handed to a 4.4.0 `pack` is read past its
+// end — and a stray 1 there writes float16 nobody asked for. Endianness: integer fields are written little-endian
 // explicitly; the float32 payload is stored in host byte order (every real NAM target — and NAM itself —
 // is little-endian IEEE-754).
 //
@@ -35,8 +43,8 @@
 //   [0..3]  magic  'N','A','M','Z'
 //   [4]     formatVersion (2; readers accept 1 = no meta block)
 //   [5]     codec   (0 = store/uncompressed; 1 = deflate, 2 = zstd — reserved)
-//   [6]     dtype   (0 = float32;             1 = float16 — reserved, lossy)
-//   [7]     flags   (bit0 = weight bytes shuffled into 4 byte-planes)
+//   [6]     dtype   (0 = float32;             1 = float16 — lossy, written only on request)
+//   [7]     flags   (bit0 = weight bytes shuffled into byte-planes: 4 for float32, 2 for float16)
 //   [8..9]  metaLen (u16; v2 only) — bytes of a display-metadata JSON that follows, readable via
 //           readMeta() without touching the weights. 0 = none.
 //   [meta]  metaLen bytes of that JSON (v2 only)
@@ -46,15 +54,16 @@
 //                                          ordinal index)
 //             u32 numArrays
 //             u32 lengths[numArrays]      (float count of each weights array, in index order)
-//             u8  payload[]               (sum(lengths) * sizeof(dtype) bytes, byte-shuffled iff flags bit0)
+//             u8  payload[]               (sum(lengths) * sizeof(dtype) bytes, byte-shuffled iff flags bit0;
+//                                          a float16 is little-endian, its planes low bytes then high bytes)
 
 #ifndef NAMZ_H
 #define NAMZ_H
 
 #define NAMZ_VERSION_MAJOR 4
-#define NAMZ_VERSION_MINOR 3
-#define NAMZ_VERSION_PATCH 1
-#define NAMZ_VERSION "4.3.1"
+#define NAMZ_VERSION_MINOR 4
+#define NAMZ_VERSION_PATCH 0
+#define NAMZ_VERSION "4.4.0"
 
 #include <cstddef>
 #include <cstdint>
@@ -78,7 +87,7 @@ inline constexpr std::uint8_t kFormatVersion = 2;   // what pack writes; readers
 inline constexpr std::size_t kMaxDepth = 128;
 
 enum Codec : std::uint8_t { CodecStore = 0 /*, CodecDeflate = 1, CodecZstd = 2 (reserved) */ };
-enum Dtype : std::uint8_t { DtypeF32   = 0 /*, DtypeF16 = 1 (reserved) */ };
+enum Dtype : std::uint8_t { DtypeF32   = 0, DtypeF16 = 1 };
 enum Flags : std::uint8_t { FlagShuffle = 1u << 0 };
 
 struct PackOptions
@@ -91,6 +100,13 @@ struct PackOptions
     // integer, else string — except that a LEADING ZERO keeps the value a string, because "0012345" is
     // an identifier and its zeros are part of it. Empty map = leave metadata untouched, no header block.
     std::map<std::string, std::string> metadata;
+
+    // What the payload stores. DtypeF32, the default, is lossless to the engine's float32. DtypeF16 is LOSSY,
+    // half the payload bytes, and written only when asked for: each weight's float32 is rounded to IEEE-754
+    // binary16, to nearest, ties to even, subnormals kept as half subnormals. A weight that rounds past
+    // half's range (|float32| >= 65520; up to that it rounds to 65504 at most) refuses the whole pack. The
+    // skeleton and the metadata are the same bytes either way. Name such a file `.nam16z`.
+    Dtype dtype = DtypeF32;
 };
 
 // True if `data` begins with the `.namz` magic. Cheap; safe on any/short buffer.
@@ -103,11 +119,13 @@ std::map<std::string, std::string> readMeta (const void* namz, std::size_t n);
 
 // Parse NAM JSON (`.nam`) bytes -> packed `.namz`. Returns an EMPTY vector on failure (not valid JSON,
 // nested deeper than kMaxDepth, a "weights" member holding an integer literal — the form a placeholder
-// takes, so it could not read back as itself — a weight whose float32 is not finite, etc.). Lossless w.r.t.
-// the float32 engine.
+// takes, so it could not read back as itself — a weight whose float32 is not finite, a dtype other than
+// F32 and F16, with F16 a weight that rounds past half's range, etc.). Lossless w.r.t. the float32 engine
+// with DtypeF32; DtypeF16 is lossy by design (see PackOptions::dtype).
 std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOptions& opts = {});
 
-// Inverse: `.namz` bytes -> reconstructed `.nam` JSON bytes (weights rehydrated as float32 numbers).
+// Inverse: `.namz` bytes -> reconstructed `.nam` JSON bytes (weights rehydrated as float32 numbers; a
+// float16 payload widened to float32 first, exactly).
 // `maxJsonBytes` caps the reconstructed output (zip-bomb guard). Returns EMPTY on failure / over-cap /
 // unknown version|codec|dtype / truncation / corruption / a payload float that is NaN or infinite.
 std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t maxJsonBytes);
@@ -122,7 +140,8 @@ struct Decoded
     // config.submodels[i].model, each with its own "weights" placeholder.
     nlohmann::json skeleton;
 
-    // The float32 weights, one vector per segment, in index order — the very floats `unpack` prints.
+    // The float32 weights, one vector per segment, in index order — the very floats `unpack` prints. A
+    // float16 payload is widened here, each half to the float32 of the same value.
     // A segment is a std::vector<float> because that is what NAM's engine takes: it moves or copies
     // straight in, with no reshaping on the way.
     std::vector<std::vector<float>> segments;
@@ -143,7 +162,8 @@ struct Decoded
 // `.namz` bytes -> its skeleton and its float32 segments, the weights never printed or parsed. nullopt on
 // exactly what `unpack` refuses — bad magic, unknown version|codec|dtype, truncation, trailing bytes,
 // lengths that do not sum to the payload, a skeleton that is not JSON or nests deeper than kMaxDepth, a
-// placeholder naming no segment, a payload float that is NaN or infinite — with the size guard counted in floats rather than JSON bytes, because no
+// placeholder naming no segment, a payload float (float32 or float16) that is NaN or infinite — with the size
+// guard counted in floats rather than JSON bytes, because no
 // JSON is ever produced. `maxFloats` caps two things:
 //   - the floats the file stores, i.e. what decode allocates for them — checked before anything at all is
 //     allocated;
@@ -226,6 +246,95 @@ namespace
         std::uint32_t bits;
         std::memcpy (&bits, &f, sizeof bits);
         return (bits & 0x7F800000u) != 0x7F800000u;
+    }
+
+    // The IEEE-754 binary16 nearest a finite float32 `f`, ties to even — on the bits, so no floating-point
+    // mode, flag or hardware half support can change it. False if `f` is not finite or its half overflows
+    // (|f| >= 65520, the tie above 65504 rounding to the even infinity): half has no such number. A half
+    // subnormal is kept; below the smallest one's midpoint (2^-25, a tie that goes to even) is a signed zero.
+    bool halfOf (float f, std::uint16_t& out)
+    {
+        std::uint32_t x;
+        std::memcpy (&x, &f, sizeof x);
+        const auto sign = (std::uint16_t) ((x >> 16) & 0x8000u);
+        const std::uint32_t a = x & 0x7FFFFFFFu;
+        if (a >= 0x7F800000u)                    // NaN or infinity
+            return false;
+        if (a >= 0x38800000u)                    // >= 2^-14: a normal half, or past half's range
+        {
+            const std::uint32_t e = (a >> 23) - 112u;   // the half's biased exponent (127 - 15 = 112)
+            if (e >= 31u)                        // >= 2^16: past every half
+                return false;
+            std::uint32_t h = (e << 10) | ((a >> 13) & 0x3FFu);
+            const std::uint32_t rest = a & 0x1FFFu;     // the 13 mantissa bits half has no room for
+            if (rest > 0x1000u || (rest == 0x1000u && (h & 1u) != 0))
+                ++h;                             // a carry out of the mantissa steps the exponent, as it should
+            if (h >= 0x7C00u)                    // rounded up to infinity
+                return false;
+            out = (std::uint16_t) (sign | h);
+            return true;
+        }
+        if (a < 0x33000000u)                     // < 2^-25: nearer to zero than to the smallest subnormal
+        {
+            out = sign;
+            return true;
+        }
+        // [2^-25, 2^-14): a half subnormal, counted in units of 2^-24. The float32 is normal here, its value
+        // (a | 2^23 mantissa) * 2^(e - 150) — so units = significand >> (126 - e), e its biased exponent.
+        const std::uint32_t significand = (a & 0x7FFFFFu) | 0x800000u;
+        const std::uint32_t shift = 126u - (a >> 23);   // 14 .. 24
+        std::uint32_t h = significand >> shift;
+        const std::uint32_t rest = significand & ((1u << shift) - 1u);
+        const std::uint32_t mid  = 1u << (shift - 1u);
+        if (rest > mid || (rest == mid && (h & 1u) != 0))
+            ++h;                                 // 0x400 is the smallest normal half: also right
+        out = (std::uint16_t) (sign | h);
+        return true;
+    }
+
+    // The float32 of a half's value — exact, every half has one. A half infinity or NaN widens to the float32
+    // infinity or NaN, which the readers' finite check then refuses.
+    float floatOfHalf (std::uint16_t h)
+    {
+        const std::uint32_t sign = (std::uint32_t) (h & 0x8000u) << 16;
+        const std::uint32_t e = (h >> 10) & 0x1Fu;
+        std::uint32_t m = h & 0x3FFu;
+        std::uint32_t bits;
+        if (e == 0x1Fu)
+            bits = sign | 0x7F800000u | (m << 13);
+        else if (e != 0)
+            bits = sign | ((e + 112u) << 23) | (m << 13);
+        else if (m == 0)
+            bits = sign;
+        else
+        {
+            std::uint32_t exp = 113u;            // a subnormal m * 2^-24: normalise it
+            while ((m & 0x400u) == 0) { m <<= 1; --exp; }
+            bits = sign | (exp << 23) | ((m & 0x3FFu) << 13);
+        }
+        float f;
+        std::memcpy (&f, &bits, sizeof f);
+        return f;
+    }
+
+    // `count` halves starting at half `first` of a float16 payload of `total`, widened into `dst`. A half is
+    // little-endian, its low byte first; with `planes` the payload is every low byte, then every high byte.
+    void widenHalves (const std::uint8_t* payload, std::size_t total, std::size_t first, std::size_t count,
+                      bool planes, float* dst)
+    {
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const std::size_t k = first + i;
+            const std::uint32_t lo = planes ? payload[k]         : payload[2 * k];
+            const std::uint32_t hi = planes ? payload[total + k] : payload[2 * k + 1];
+            dst[i] = floatOfHalf ((std::uint16_t) (lo | (hi << 8)));
+        }
+    }
+
+    // Bytes per stored weight: 4 for float32, 2 for float16, 0 for a dtype namz does not define.
+    std::size_t bytesPerWeight (std::uint8_t dtype)
+    {
+        return dtype == DtypeF32 ? 4 : dtype == DtypeF16 ? 2 : 0;
     }
 
     bool isNumericWeights (const json& v)
@@ -465,9 +574,26 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
     }
     catch (...) { return {}; }
 
+    if (bytesPerWeight (opts.dtype) == 0)
+        return {};
+
     std::size_t totalFloats = 0;
     for (const auto& a : arrays)
         totalFloats += a.size();
+
+    std::vector<std::uint16_t> halves;   // DtypeF16 only: every weight's half, in payload order
+    if (opts.dtype == DtypeF16)
+    {
+        halves.reserve (totalFloats);
+        for (const auto& a : arrays)
+            for (const float f : a)
+            {
+                std::uint16_t h = 0;
+                if (! halfOf (f, h))
+                    return {};
+                halves.push_back (h);
+            }
+    }
 
     std::vector<std::uint8_t> body;
     putU32 (body, (std::uint32_t) skeleton.size());
@@ -476,7 +602,20 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
     for (const auto& a : arrays)
         putU32 (body, (std::uint32_t) a.size());
 
-    if (opts.shuffle && totalFloats > 0)
+    if (opts.dtype == DtypeF16)
+    {
+        const std::size_t at = body.size();
+        body.resize (at + 2 * totalFloats);
+        std::uint8_t* d = body.data() + at;
+        for (std::size_t i = 0; i < totalFloats; ++i)
+        {
+            const auto lo = (std::uint8_t) (halves[i] & 0xff);
+            const auto hi = (std::uint8_t) (halves[i] >> 8);
+            if (opts.shuffle) { d[i] = lo;         d[totalFloats + i] = hi; }
+            else              { d[2 * i] = lo;     d[2 * i + 1] = hi; }
+        }
+    }
+    else if (opts.shuffle && totalFloats > 0)
     {
         std::vector<float> flat;
         flat.reserve (totalFloats);
@@ -500,7 +639,7 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
     out.insert (out.end(), kMagic, kMagic + sizeof (kMagic));
     out.push_back (kFormatVersion);
     out.push_back (CodecStore);
-    out.push_back (DtypeF32);
+    out.push_back (opts.dtype);
     out.push_back ((std::uint8_t) (opts.shuffle ? FlagShuffle : 0));
     putU16 (out, (std::uint16_t) headerMeta.size());
     out.insert (out.end(), headerMeta.begin(), headerMeta.end());
@@ -518,7 +657,8 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
     const std::uint8_t codec = bytes[5];
     const std::uint8_t dtype = bytes[6];
     const std::uint8_t flags = bytes[7];
-    if (fmt < 1 || fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)   // only 1 and 2 are defined
+    const std::size_t es = bytesPerWeight (dtype);
+    if (fmt < 1 || fmt > kFormatVersion || codec != CodecStore || es == 0)   // only versions 1 and 2 are defined
         return {};
 
     std::size_t off = 8;
@@ -559,16 +699,18 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
             totalFloats += lengths[i];
         }
 
-        // The float32 payload must be EXACTLY the rest of the buffer (division, not multiply -> no
-        // overflow). Rejects truncation and lying/short lengths that would slice garbage into the weights.
-        if (rem % sizeof (float) != 0 || totalFloats != rem / sizeof (float))
+        // The payload must be EXACTLY the rest of the buffer, `es` bytes a weight (division, not multiply ->
+        // no overflow). Rejects truncation and lying/short lengths that would slice garbage into the weights.
+        if (rem % es != 0 || totalFloats != rem / es)
             return {};
 
         std::vector<std::vector<float>> segs (numArrays);
         if (totalFloats > 0)
         {
             std::vector<float> flat (totalFloats);
-            if ((flags & FlagShuffle) != 0)
+            if (dtype == DtypeF16)
+                widenHalves (p, totalFloats, 0, totalFloats, (flags & FlagShuffle) != 0, flat.data());
+            else if ((flags & FlagShuffle) != 0)
                 unshuffleInto (p, totalFloats, flat.data());
             else
                 std::memcpy (flat.data(), p, totalFloats * sizeof (float));
@@ -634,7 +776,8 @@ std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxF
     const std::uint8_t codec = bytes[5];
     const std::uint8_t dtype = bytes[6];
     const std::uint8_t flags = bytes[7];
-    if (fmt < 1 || fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)   // only 1 and 2 are defined
+    const std::size_t es = bytesPerWeight (dtype);
+    if (fmt < 1 || fmt > kFormatVersion || codec != CodecStore || es == 0)   // only versions 1 and 2 are defined
         return std::nullopt;
 
     std::size_t off = 8;
@@ -662,12 +805,12 @@ std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxF
         const std::uint8_t* lengthBytes = p;
         p += 4 * numArrays; rem -= 4 * numArrays;
 
-        // The float32 payload must be EXACTLY the rest of the buffer, and the floats it stores within the
-        // cap — both known before anything is allocated. Each length is checked against what is left of the
-        // payload, so the sum can neither overflow nor wrap — on a 32-bit size_t included. The lengths are
-        // read where they lie, never copied out.
-        if (rem % sizeof (float) != 0) return std::nullopt;
-        const std::size_t totalFloats = rem / sizeof (float);
+        // The payload must be EXACTLY the rest of the buffer, `es` bytes a weight, and the floats it stores
+        // within the cap — both known before anything is allocated. Each length is checked against what is
+        // left of the payload, so the sum can neither overflow nor wrap — on a 32-bit size_t included. The
+        // lengths are read where they lie, never copied out.
+        if (rem % es != 0) return std::nullopt;
+        const std::size_t totalFloats = rem / es;
         if (totalFloats > maxFloats) return std::nullopt;
         const auto lengthOf = [lengthBytes] (std::size_t i) { return (std::size_t) getU32 (lengthBytes + 4 * i); };
         std::size_t summed = 0;
@@ -695,7 +838,9 @@ std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxF
             seg.resize (len);
             if (len > 0)
             {
-                if ((flags & FlagShuffle) != 0)
+                if (dtype == DtypeF16)
+                    widenHalves (p, totalFloats, first, len, (flags & FlagShuffle) != 0, seg.data());
+                else if ((flags & FlagShuffle) != 0)
                     unshuffleSegment (p, totalFloats, first, len, seg.data());
                 else
                     std::memcpy (seg.data(), p + first * sizeof (float), len * sizeof (float));

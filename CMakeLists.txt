@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 cmake_minimum_required(VERSION 3.14)
-project(namz VERSION 4.3.1 LANGUAGES CXX)
+project(namz VERSION 4.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,6 +53,39 @@ if(NAMZ_BUILD_TESTS)
   add_executable(namz_test_adversarial tests/adversarial.cpp)
   target_link_libraries(namz_test_adversarial PRIVATE namz::namz)
   add_test(NAME namz_adversarial COMMAND namz_test_adversarial)
+
+  add_executable(namz_test_f16 tests/f16.cpp)
+  target_link_libraries(namz_test_f16 PRIVATE namz::namz)
+  add_test(NAME namz_f16 COMMAND namz_test_f16)
+
+  # The CLI's float16: --f16 and the .nam16z name must agree, and what it writes reads back as float16.
+  if(NAMZ_BUILD_CLI)
+    set(_vec ${CMAKE_CURRENT_SOURCE_DIR}/conformance/vectors)
+    set(_out ${CMAKE_CURRENT_BINARY_DIR}/cli-f16)
+    file(MAKE_DIRECTORY ${_out})
+    add_test(NAME namz_cli_f16_encode COMMAND namz_cli encode ${_vec}/nested.nam ${_out}/nested.nam16z --f16)
+    set_tests_properties(namz_cli_f16_encode PROPERTIES FIXTURES_SETUP cli_f16)
+    add_test(NAME namz_cli_f16_map COMMAND namz_cli map ${_out}/nested.nam16z)
+    set_tests_properties(namz_cli_f16_map PROPERTIES FIXTURES_REQUIRED cli_f16
+                         PASS_REGULAR_EXPRESSION "float16 weights")
+    add_test(NAME namz_cli_f16_decode COMMAND namz_cli decode ${_out}/nested.nam16z ${_out}/nested.nam)
+    set_tests_properties(namz_cli_f16_decode PROPERTIES FIXTURES_REQUIRED cli_f16)
+    add_test(NAME namz_cli_f16_verify COMMAND namz_cli verify ${_vec}/nested.nam --f16)
+    set_tests_properties(namz_cli_f16_verify PROPERTIES PASS_REGULAR_EXPRESSION "nam16z=[0-9]+ .*idempotent=yes")
+    # A refusal is checked whole — the exit code, the message, and that no output file exists afterwards —
+    # by tests/cli-expect.cmake, since PASS_REGULAR_EXPRESSION ignores the exit code and WILL_FAIL passes on
+    # any failure at all.
+    set(_expect ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:namz_cli>)
+    set(_script -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli-expect.cmake --)
+    add_test(NAME namz_cli_f16_needs_name COMMAND ${_expect} -DEXIT=2 "-DSTDERR=name the output \\.nam16z"
+             -DOUT=${_out}/x.namz ${_script} encode ${_vec}/nested.nam ${_out}/x.namz --f16)
+    add_test(NAME namz_cli_f16_needs_flag COMMAND ${_expect} -DEXIT=2 "-DSTDERR=pass --f16"
+             -DOUT=${_out}/x.nam16z ${_script} encode ${_vec}/nested.nam ${_out}/x.nam16z)
+    add_test(NAME namz_cli_f16_overflow COMMAND ${_expect} -DEXIT=1 "-DSTDERR=65520"   # FLT_MAX has no half
+             -DOUT=${_out}/edge.nam16z ${_script} encode ${_vec}/edge-floats.nam ${_out}/edge.nam16z --f16)
+    add_test(NAME namz_cli_verify_unknown_option COMMAND ${_expect} -DEXIT=2 "-DSTDERR=unknown option: --bogus"
+             ${_script} verify ${_vec}/nested.nam --bogus)
+  endif()
 
   add_executable(namz_test_rig tests/rig.cpp)
   target_link_libraries(namz_test_rig PRIVATE namz::rig namz::namz)   # namz::namz brings nlohmann for the rig.json loader
