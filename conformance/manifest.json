@@ -1,6 +1,6 @@
 {
   "format": "namz",
-  "note": "Cross-language conformance vectors. Encode a valid input with the given options and it must BYTE-MATCH the .namz; decode the .namz and the weights must be bit-exact float32. Every invalid .namz must be rejected (empty/error, never crash).",
+  "note": "Cross-language conformance vectors. Encode a valid input with the given options and it must BYTE-MATCH the .namz; decode the .namz and the weights must be bit-exact float32. Every invalid .namz must be rejected (empty/error, never crash). Decode each decodeOnly .namz and it must BYTE-MATCH its .nam. Encode each invalidNam .nam and it must be refused.",
   "valid": [
     {
       "name": "flat",
@@ -69,6 +69,27 @@
       "output": "vectors/degenerate-array.namz",
       "shuffle": true,
       "set": {}
+    },
+    {
+      "name": "depth-128",
+      "input": "vectors/depth-128.nam",
+      "output": "vectors/depth-128.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "weights-not-placeholders",
+      "input": "vectors/weights-not-placeholders.nam",
+      "output": "vectors/weights-not-placeholders.namz",
+      "shuffle": true,
+      "set": {}
+    },
+    {
+      "name": "skeleton-doubles",
+      "input": "vectors/skeleton-doubles.nam",
+      "output": "vectors/skeleton-doubles.namz",
+      "shuffle": true,
+      "set": {}
     }
   ],
   "invalid": [
@@ -116,6 +137,172 @@
       "name": "magic-only",
       "file": "invalid/magic-only.namz",
       "why": "header too short"
+    },
+    {
+      "name": "version-zero",
+      "file": "invalid/version-zero.namz",
+      "why": "formatVersion 0 \u2014 only 1 and 2 are defined; the same bytes with 1 are decode-only/version-1"
+    },
+    {
+      "name": "length-sum-wrap",
+      "file": "invalid/length-sum-wrap.namz",
+      "why": "lengths {2, 0xFFFFFFFF} over a one-float payload: the sum wraps to 1 in 32 bits, it is not 1"
+    },
+    {
+      "name": "placeholder-past-segments",
+      "file": "invalid/placeholder-past-segments.namz",
+      "why": "placeholder 1 with one segment: names no segment"
+    },
+    {
+      "name": "placeholder-negative",
+      "file": "invalid/placeholder-negative.namz",
+      "why": "placeholder -1: names no segment"
+    },
+    {
+      "name": "placeholder-uint64",
+      "file": "invalid/placeholder-uint64.namz",
+      "why": "9223372036854775808 fits an unsigned 64-bit integer, so it is a placeholder, and it names no segment"
+    },
+    {
+      "name": "placeholder-duplicate-key",
+      "file": "invalid/placeholder-duplicate-key.namz",
+      "why": "two \"weights\" keys in one object: the last one counts, and 5 names no segment"
+    },
+    {
+      "name": "depth-129-scalar",
+      "file": "invalid/depth-129-scalar.namz",
+      "why": "129 deep: an object around 128 arrays around a scalar (a scalar is 0)"
+    },
+    {
+      "name": "depth-129-empty",
+      "file": "invalid/depth-129-empty.namz",
+      "why": "129 deep: an object around 127 arrays around an empty array (an empty one is 1)"
+    },
+    {
+      "name": "depth-129-objects",
+      "file": "invalid/depth-129-objects.namz",
+      "why": "129 deep: an object around 127 objects around an empty object"
+    },
+    {
+      "name": "depth-10000",
+      "file": "invalid/depth-10000.namz",
+      "why": "10,000 deep: refused without following it, and nothing may run out of stack on the way"
+    },
+    {
+      "name": "depth-129-duplicate-key",
+      "file": "invalid/depth-129-duplicate-key.namz",
+      "why": "129 deep as written: depth counts the text, so a member a later duplicate key replaces still counts"
+    },
+    {
+      "name": "skeleton-integer-overflow",
+      "file": "invalid/skeleton-integer-overflow.namz",
+      "why": "an integer literal past every double: not a number the reference can hold"
+    },
+    {
+      "name": "skeleton-utf16",
+      "file": "invalid/skeleton-utf16.namz",
+      "why": "a skeleton in UTF-16: JSON text in a .namz is UTF-8"
+    },
+    {
+      "name": "skeleton-lone-surrogate",
+      "file": "invalid/skeleton-lone-surrogate.namz",
+      "why": "an escaped lone surrogate: no Unicode text, so not a JSON string the reference reads"
+    },
+    {
+      "name": "payload-inf",
+      "file": "invalid/payload-inf.namz",
+      "why": "a payload float that is +infinity: every payload float is a finite float32"
+    },
+    {
+      "name": "payload-nan",
+      "file": "invalid/payload-nan.namz",
+      "why": "a payload float that is NaN, in a segment no placeholder names: the rule is the payload's"
+    }
+  ],
+  "decodeOnly": [
+    {
+      "name": "version-1",
+      "file": "decode-only/version-1.namz",
+      "output": "decode-only/version-1.nam",
+      "why": "formatVersion 1: no metadata length"
+    },
+    {
+      "name": "placeholder-minus-zero",
+      "file": "decode-only/placeholder-minus-zero.namz",
+      "output": "decode-only/placeholder-minus-zero.nam",
+      "why": "-0 is an integer literal, so it is a placeholder, and it names segment 0"
+    },
+    {
+      "name": "placeholder-fraction",
+      "file": "decode-only/placeholder-fraction.namz",
+      "output": "decode-only/placeholder-fraction.nam",
+      "why": "1.0 has a fraction: a number, not a placeholder (segment 1 exists and stays unnamed)"
+    },
+    {
+      "name": "placeholder-exponent",
+      "file": "decode-only/placeholder-exponent.namz",
+      "output": "decode-only/placeholder-exponent.nam",
+      "why": "0e0 has an exponent: a number, not a placeholder, printed as 0.0"
+    },
+    {
+      "name": "placeholder-past-uint64",
+      "file": "decode-only/placeholder-past-uint64.namz",
+      "output": "decode-only/placeholder-past-uint64.nam",
+      "why": "past every 64-bit integer: a double, not a placeholder"
+    },
+    {
+      "name": "placeholder-duplicate-key",
+      "file": "decode-only/placeholder-duplicate-key.namz",
+      "output": "decode-only/placeholder-duplicate-key.nam",
+      "why": "two \"weights\" keys in one object: the last one counts, and 0 names segment 0"
+    },
+    {
+      "name": "float-digits",
+      "file": "decode-only/float-digits.namz",
+      "output": "decode-only/float-digits.nam",
+      "why": "float32 payload values printed with the reference's own digits"
+    }
+  ],
+  "invalidNam": [
+    {
+      "name": "weights-integer",
+      "file": "invalid/weights-integer.nam",
+      "why": "an integer \"weights\" would be stored as a placeholder naming a segment that does not exist"
+    },
+    {
+      "name": "weights-integer-nested",
+      "file": "invalid/weights-integer-nested.nam",
+      "why": "config.weights 0 would read back as the top-level weights array"
+    },
+    {
+      "name": "weights-minus-zero",
+      "file": "invalid/weights-minus-zero.nam",
+      "why": "-0 is an integer literal, so it would be stored as a placeholder"
+    },
+    {
+      "name": "depth-129",
+      "file": "invalid/depth-129.nam",
+      "why": "129 deep: pack refuses what no reader would read back"
+    },
+    {
+      "name": "depth-129-duplicate-key",
+      "file": "invalid/depth-129-duplicate-key.nam",
+      "why": "129 deep as written: depth counts the text, so a member a later duplicate key replaces still counts"
+    },
+    {
+      "name": "utf16",
+      "file": "invalid/utf16.nam",
+      "why": "a .nam in UTF-16: JSON text is UTF-8"
+    },
+    {
+      "name": "lone-surrogate",
+      "file": "invalid/lone-surrogate.nam",
+      "why": "an escaped lone surrogate: no Unicode text, so not a JSON string"
+    },
+    {
+      "name": "weights-float32-overflow",
+      "file": "invalid/weights-float32-overflow.nam",
+      "why": "1e39 is a finite JSON number past the float32 range: the payload never stores an infinity"
     }
   ]
 }

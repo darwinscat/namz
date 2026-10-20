@@ -10,6 +10,9 @@ manifest.json         machine-readable description of every case
 vectors/<name>.nam    a valid input
 vectors/<name>.namz   the reference output — your encode() must produce these exact bytes
 invalid/<name>.namz   malformed — your decode() must reject it (error/empty), never crash
+decode-only/<name>.namz + <name>.nam
+                      a .namz pack never writes — your decode() must produce that .nam byte for byte
+invalid/<name>.nam    a .nam your encode() must refuse (error/empty)
 generate.py           regenerates everything from the reference CLI (see below)
 ```
 
@@ -22,6 +25,19 @@ For every entry in `manifest.json["valid"]`:
 
 For every entry in `manifest.json["invalid"]`:
 - **decode** the file → must be **rejected** (empty/error) and must not crash or hang.
+
+For every entry in `manifest.json["decodeOnly"]`:
+- **decode** `file` → must **byte-match** `output`. These are containers `pack` never writes — a
+  placeholder spelled `-0`, a `weights` that is `1.0` or `0e0` or past uint64, two `weights` keys, a
+  version-1 file, float32 values whose digits the reference picks its own way — so they pin what a reader
+  takes from the literal as written and how it prints a number (see NAMZ-FORMAT.md "Placeholders and
+  depth"): a language whose JSON parser forgets `1.0` from `1`, rounds integers past 2^53, or prints its own
+  shortest digits instead of the reference's Grisu2 ones, fails here.
+
+For every entry in `manifest.json["invalidNam"]`:
+- **encode** the file → must be **refused** (empty/error): a `.nam` holding an integer `weights` member,
+  one nested deeper than 128 (as written, a member a later duplicate key replaces included), one in UTF-16,
+  one escaping a lone surrogate, one holding a weight past the float32 range.
 
 Plus each port should add its own **local property fuzz** (generate N random finite float32, round-trip,
 assert bit-exact) — that part isn't shared bytes, it's a per-language property.
