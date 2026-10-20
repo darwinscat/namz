@@ -4,6 +4,8 @@
 // bit-exact + idempotent; every invalid .namz -> rejected (empty), never a crash. The C++ reference also
 // holds its second reader, namz::decode, to the same vectors: its segments are the input's weights bit
 // for bit, refilled it dumps to unpack's exact bytes, and it refuses every invalid blob unpack refuses.
+// Every decodeOnly .namz must unpack (and decode -> refill -> dump) to its .nam byte for byte; every
+// invalidNam .nam must be refused by pack.
 // Copyright (c) 2026 Darwin's Cat — Oleh Tsymaienko <oleh@darwinscat.com> & Alisa Lafoks <alisa@darwinscat.com>.
 
 #define NAMZ_IMPLEMENTATION
@@ -129,6 +131,37 @@ int main()
         // must be rejected cleanly (empty) and must not crash reaching here.
         CHECK (namz::unpack (blob.data(), blob.size(), kCap).empty(), ("invalid: rejected -> " + name).c_str());
         CHECK (! namz::decode (blob.data(), blob.size(), kMaxFloats).has_value(), ("invalid: namz::decode rejects -> " + name).c_str());
+    }
+
+    CHECK (manifest.contains ("decodeOnly") && manifest.contains ("invalidNam"), "manifest: decodeOnly and invalidNam present");
+
+    // files pack never writes — a hand-made placeholder, a v1 container — and the exact .nam they decode to
+    for (const auto& c : manifest["decodeOnly"])
+    {
+        const std::string name = c["name"].get<std::string>();
+        bool a = false, b = false;
+        auto blob = readFile (dir + "/" + c["file"].get<std::string>(), a);
+        auto want = readFile (dir + "/" + c["output"].get<std::string>(), b);
+        CHECK (a && b, ("decodeOnly: files present for " + name).c_str());
+        if (! (a && b)) continue;
+        CHECK (namz::unpack (blob.data(), blob.size(), kCap) == want, ("decodeOnly: unpack byte-matches the .nam for " + name).c_str());
+        auto d = namz::decode (blob.data(), blob.size(), kMaxFloats);
+        CHECK (d.has_value(), ("decodeOnly: namz::decode accepts " + name).c_str());
+        if (! d) continue;
+        json full = d->skeleton;
+        const bool filled = d->refill (full);
+        const auto dumped = full.dump();
+        CHECK (filled && bytes (dumped.begin(), dumped.end()) == want, ("decodeOnly: namz::decode -> refill -> dump byte-matches the .nam for " + name).c_str());
+    }
+
+    // a .nam pack must refuse
+    for (const auto& c : manifest["invalidNam"])
+    {
+        const std::string name = c["name"].get<std::string>();
+        bool a = false;
+        auto input = readFile (dir + "/" + c["file"].get<std::string>(), a);
+        CHECK (a, ("invalidNam: file present for " + name).c_str());
+        CHECK (namz::pack (input.data(), input.size()).empty(), ("invalidNam: pack refuses -> " + name).c_str());
     }
 
     std::fprintf (stderr, "\n==== namz conformance: %d checks, %d failures — %s ====\n",

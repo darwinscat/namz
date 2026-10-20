@@ -53,8 +53,8 @@
 
 #define NAMZ_VERSION_MAJOR 4
 #define NAMZ_VERSION_MINOR 3
-#define NAMZ_VERSION_PATCH 0
-#define NAMZ_VERSION "4.3.0"
+#define NAMZ_VERSION_PATCH 1
+#define NAMZ_VERSION "4.3.1"
 
 #include <cstddef>
 #include <cstdint>
@@ -68,7 +68,7 @@
 namespace namz
 {
 
-inline constexpr std::uint8_t kFormatVersion = 2;
+inline constexpr std::uint8_t kFormatVersion = 2;   // what pack writes; readers take 1 and 2, nothing else
 
 // The deepest any JSON in a `.namz` may nest. Depth: a scalar is 0; an array or object is 1 + the deepest of
 // its members, so an empty one is 1. `unpack` and `decode` refuse a skeleton deeper than this, `pack` refuses
@@ -98,16 +98,18 @@ bool isNamz (const void* data, std::size_t n) noexcept;
 
 // Read the display-metadata block (tone_type / device / gear_* / name / …) WITHOUT touching the weights.
 // Empty for a v1 `.namz`, a non-`.namz` buffer, or one packed without metadata. Values are strings
-// (bool -> "true"/"false", number -> its digits).
+// (bool -> "true"/"false", integer -> its digits, signed or unsigned as written, other number -> "%f").
 std::map<std::string, std::string> readMeta (const void* namz, std::size_t n);
 
 // Parse NAM JSON (`.nam`) bytes -> packed `.namz`. Returns an EMPTY vector on failure (not valid JSON,
-// non-numeric weights, etc.). Lossless w.r.t. the float32 engine.
+// nested deeper than kMaxDepth, a "weights" member holding an integer literal — the form a placeholder
+// takes, so it could not read back as itself — a weight whose float32 is not finite, etc.). Lossless w.r.t.
+// the float32 engine.
 std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOptions& opts = {});
 
 // Inverse: `.namz` bytes -> reconstructed `.nam` JSON bytes (weights rehydrated as float32 numbers).
 // `maxJsonBytes` caps the reconstructed output (zip-bomb guard). Returns EMPTY on failure / over-cap /
-// unknown codec|dtype / truncation / corruption.
+// unknown version|codec|dtype / truncation / corruption / a payload float that is NaN or infinite.
 std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t maxJsonBytes);
 
 // What a `.namz` holds, read without making a single weight a JSON number. Owns everything; nothing in it
@@ -141,7 +143,7 @@ struct Decoded
 // `.namz` bytes -> its skeleton and its float32 segments, the weights never printed or parsed. nullopt on
 // exactly what `unpack` refuses — bad magic, unknown version|codec|dtype, truncation, trailing bytes,
 // lengths that do not sum to the payload, a skeleton that is not JSON or nests deeper than kMaxDepth, a
-// placeholder naming no segment — with the size guard counted in floats rather than JSON bytes, because no
+// placeholder naming no segment, a payload float that is NaN or infinite — with the size guard counted in floats rather than JSON bytes, because no
 // JSON is ever produced. `maxFloats` caps two things:
 //   - the floats the file stores, i.e. what decode allocates for them — checked before anything at all is
 //     allocated;
@@ -217,6 +219,15 @@ namespace
         }
     }
 
+    // A float32 that is a number: its exponent bits are not all ones (that is NaN or an infinity). Read off
+    // the bits, so no floating-point mode or flag can change the answer.
+    bool finiteF32 (float f)
+    {
+        std::uint32_t bits;
+        std::memcpy (&bits, &f, sizeof bits);
+        return (bits & 0x7F800000u) != 0x7F800000u;
+    }
+
     bool isNumericWeights (const json& v)
     {
         if (! v.is_array())
@@ -254,33 +265,46 @@ namespace
     }
 
     // DFS: pull every numeric "weights" array out into `out` (in traversal order) and replace its value in
-    // the tree with its ordinal index (a JSON integer). The stripped tree is the skeleton.
-    void extractWeights (json& node, std::vector<std::vector<float>>& out)
+    // the tree with its ordinal index (a JSON integer). The stripped tree is the skeleton. False if a
+    // "weights" member already holds an integer: the skeleton would store it as a placeholder, and a reader
+    // would swap a segment in for it (config.weights 0 came back as the top-level array) or refuse the file
+    // ("weights":7 named no segment). A placeholder is pack's to write, never the input's. False too if a
+    // weight's float32 is not finite: 1e39 is a finite JSON number past the float32 range, and the payload
+    // never stores NaN or an infinity (the readers refuse one).
+    bool extractWeights (json& node, std::vector<std::vector<float>>& out)
     {
         if (node.is_object())
         {
             for (auto it = node.begin(); it != node.end(); ++it)
             {
+                if (it.key() == "weights" && it.value().is_number_integer())
+                    return false;
                 if (it.key() == "weights" && isNumericWeights (it.value()))
                 {
                     std::vector<float> w;
                     w.reserve (it.value().size());
                     for (const auto& x : it.value())
+                    {
                         w.push_back ((float) x.get<double>());
+                        if (! finiteF32 (w.back()))
+                            return false;
+                    }
                     out.push_back (std::move (w));
                     it.value() = (std::int64_t) (out.size() - 1);
                 }
-                else
+                else if (! extractWeights (it.value(), out))
                 {
-                    extractWeights (it.value(), out);
+                    return false;
                 }
             }
         }
         else if (node.is_array())
         {
             for (auto& v : node)
-                extractWeights (v, out);
+                if (! extractWeights (v, out))
+                    return false;
         }
+        return true;
     }
 
     // DFS inverse: wherever a "weights" key holds an integer index, swap in that float segment. `ok` is
@@ -331,22 +355,34 @@ namespace
         }
     }
 
-    // True if `root` nests no deeper than `limit` — the rule of kMaxDepth: a scalar is 0, an array or object
-    // 1 + the deepest of its members. An explicit stack, never recursion: the tree it measures may be too deep
-    // to recurse through, and catching that is what it is for.
-    bool depthWithin (const json& root, std::size_t limit)
+    // True if the JSON text [p, end) nests no deeper than `limit` — the rule of kMaxDepth: a scalar is 0, an
+    // array or object 1 + the deepest of its members, counted AS WRITTEN: the brackets outside strings, before
+    // anything is parsed. A member a later duplicate key replaces still counts, so the verdict is the text's
+    // and every reader reaches it the same way, whichever duplicate its parser keeps. One pass, no recursion
+    // and no tree: text too deep to follow is refused without being followed. On text that is not JSON the
+    // count may be anything; the parse that comes next refuses it.
+    bool depthWithin (const char* p, const char* end, std::size_t limit)
     {
-        std::vector<std::pair<const json*, std::size_t>> todo { { &root, 0 } };   // a node, the containers above it
-        while (! todo.empty())
+        std::size_t depth = 0;
+        while (p < end)
         {
-            const auto [node, above] = todo.back();
-            todo.pop_back();
-            if (! node->is_structured())
-                continue;
-            if (above + 1 > limit)
-                return false;
-            for (const auto& member : *node)
-                todo.emplace_back (&member, above + 1);
+            const char c = *p++;
+            if (c == '"')
+            {
+                while (p < end && *p != '"')
+                    p += (*p == '\\' && end - p > 1) ? 2 : 1;
+                if (p < end)
+                    ++p;   // the closing quote; an unterminated string ends the text
+            }
+            else if (c == '[' || c == '{')
+            {
+                if (++depth > limit)
+                    return false;
+            }
+            else if ((c == ']' || c == '}') && depth > 0)
+            {
+                --depth;
+            }
         }
         return true;
     }
@@ -402,10 +438,10 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
     std::string headerMeta;
     try
     {
-        auto j = json::parse (static_cast<const char*> (namJson),
-                              static_cast<const char*> (namJson) + n);
-        if (! depthWithin (j, kMaxDepth))   // what pack writes, unpack and decode read back
+        const auto* text = static_cast<const char*> (namJson);
+        if (! depthWithin (text, text + n, kMaxDepth))   // what pack writes, unpack and decode read back
             return {};
+        auto j = json::parse (text, text + n);
 
         if (! opts.metadata.empty())
         {
@@ -423,7 +459,8 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
                 headerMeta.clear();
         }
 
-        extractWeights (j, arrays);
+        if (! extractWeights (j, arrays))
+            return {};
         skeleton = j.dump();
     }
     catch (...) { return {}; }
@@ -481,7 +518,7 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
     const std::uint8_t codec = bytes[5];
     const std::uint8_t dtype = bytes[6];
     const std::uint8_t flags = bytes[7];
-    if (fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)
+    if (fmt < 1 || fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)   // only 1 and 2 are defined
         return {};
 
     std::size_t off = 8;
@@ -535,6 +572,9 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
                 unshuffleInto (p, totalFloats, flat.data());
             else
                 std::memcpy (flat.data(), p, totalFloats * sizeof (float));
+            for (const float f : flat)   // every payload float, named by a placeholder or not
+                if (! finiteF32 (f))
+                    return {};
 
             std::size_t o = 0;
             for (std::size_t i = 0; i < numArrays; ++i)
@@ -545,9 +585,9 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
             }
         }
 
-        auto j = json::parse (skeleton);
-        if (! depthWithin (j, kMaxDepth))
+        if (! depthWithin (skeleton.data(), skeleton.data() + skeleton.size(), kMaxDepth))
             return {};
+        auto j = json::parse (skeleton);
         bool refillOk = true;
         refillWeights (j, segs, refillOk);
         if (! refillOk) return {};
@@ -594,7 +634,7 @@ std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxF
     const std::uint8_t codec = bytes[5];
     const std::uint8_t dtype = bytes[6];
     const std::uint8_t flags = bytes[7];
-    if (fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)
+    if (fmt < 1 || fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)   // only 1 and 2 are defined
         return std::nullopt;
 
     std::size_t off = 8;
@@ -639,9 +679,9 @@ std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxF
         }
         if (summed != totalFloats) return std::nullopt;
 
+        if (! depthWithin (skeleton, skeleton + skeletonLen, kMaxDepth)) return std::nullopt;
         Decoded out;
         out.skeleton = json::parse (skeleton, skeleton + skeletonLen);
-        if (! depthWithin (out.skeleton, kMaxDepth)) return std::nullopt;
         std::size_t named = 0;
         if (! placeholdersFit (out.skeleton, lengthBytes, numArrays, maxFloats, named))
             return std::nullopt;
@@ -662,6 +702,10 @@ std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxF
             }
             first += len;
         }
+        for (const auto& seg : out.segments)   // the whole payload: the segments cover every float it stores
+            for (const float f : seg)
+                if (! finiteF32 (f))
+                    return std::nullopt;
         return out;
     }
     catch (...) { return std::nullopt; }
@@ -680,16 +724,20 @@ std::map<std::string, std::string> readMeta (const void* namz, std::size_t n)
         return out;
     try
     {
-        auto j = json::parse (bytes + 10, bytes + 10 + metaLen);
-        if (j.is_object() && depthWithin (j, kMaxDepth))
+        const auto* text = reinterpret_cast<const char*> (bytes + 10);
+        if (! depthWithin (text, text + metaLen, kMaxDepth))
+            return out;
+        auto j = json::parse (text, text + metaLen);
+        if (j.is_object())
             for (auto it = j.begin(); it != j.end(); ++it)
             {
                 const auto& v = it.value();
-                if      (v.is_string())         out[it.key()] = v.get<std::string>();
-                else if (v.is_boolean())        out[it.key()] = v.get<bool>() ? "true" : "false";
-                else if (v.is_number_integer()) out[it.key()] = std::to_string (v.get<long long>());
-                else if (v.is_number())         out[it.key()] = std::to_string (v.get<double>());
-                else                            out[it.key()] = v.dump();
+                if      (v.is_string())          out[it.key()] = v.get<std::string>();
+                else if (v.is_boolean())         out[it.key()] = v.get<bool>() ? "true" : "false";
+                else if (v.is_number_unsigned()) out[it.key()] = std::to_string (v.get<unsigned long long>());   // past int64 too
+                else if (v.is_number_integer())  out[it.key()] = std::to_string (v.get<long long>());
+                else if (v.is_number())          out[it.key()] = std::to_string (v.get<double>());
+                else                             out[it.key()] = v.dump();
             }
     }
     catch (...) {}
