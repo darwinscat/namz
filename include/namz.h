@@ -15,12 +15,21 @@
 // deflate there is redundant, and storing raw keeps `.namz` DETERMINISTIC and byte-identical across
 // platforms and runs, dependency-free, and fast to load.
 //
+// Two ways to read one back. `unpack` rebuilds the `.nam` JSON text, for anything that takes a `.nam`.
+// `decode` hands over what the file holds — the skeleton already parsed and the weights as float32
+// vectors — for a loader that builds its model itself: the weights never become decimal text, so they are
+// never printed and never parsed back.
+//
 // USAGE (single-header, stb-style): in exactly ONE translation unit, define the implementation:
 //     #define NAMZ_IMPLEMENTATION
 //     #include "namz.h"
-// Everywhere else just `#include "namz.h"`. The implementation needs <nlohmann/json.hpp> on the include
-// path. Endianness: integer fields are written little-endian explicitly; the float32 payload is stored in
-// host byte order (every real NAM target — and NAM itself — is little-endian IEEE-754).
+// Everywhere else just `#include "namz.h"`. The header needs <nlohmann/json.hpp> on the include path
+// (`decode` hands out a parsed skeleton), and every translation unit that includes it must see the SAME
+// nlohmann/json, configured the same way (JSON_DIAGNOSTICS and the rest), as the one that defines
+// NAMZ_IMPLEMENTATION: `decode`'s mangled name carries no nlohmann type, so a mismatch is no link error —
+// it links silently against a `Decoded` of another layout. Endianness: integer fields are written little-endian
+// explicitly; the float32 payload is stored in host byte order (every real NAM target — and NAM itself —
+// is little-endian IEEE-754).
 //
 // Wire format (all multi-byte ints little-endian):
 //   [0..3]  magic  'N','A','M','Z'
@@ -42,21 +51,31 @@
 #ifndef NAMZ_H
 #define NAMZ_H
 
-#define NAMZ_VERSION_MAJOR 3
+#define NAMZ_VERSION_MAJOR 4
 #define NAMZ_VERSION_MINOR 3
 #define NAMZ_VERSION_PATCH 0
-#define NAMZ_VERSION "4.2.0"
+#define NAMZ_VERSION "4.3.0"
 
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace namz
 {
 
 inline constexpr std::uint8_t kFormatVersion = 2;
+
+// The deepest any JSON in a `.namz` may nest. Depth: a scalar is 0; an array or object is 1 + the deepest of
+// its members, so an empty one is 1. `unpack` and `decode` refuse a skeleton deeper than this, `pack` refuses
+// a `.nam` deeper than this (so everything it writes reads back), and `readMeta` reads a deeper meta block as
+// no metadata. Real captures nest about 10 deep. The limit is what keeps every recursive walk over the tree —
+// namz's own, nlohmann's dump and compare, a loader's model builder — off the end of the stack.
+inline constexpr std::size_t kMaxDepth = 128;
 
 enum Codec : std::uint8_t { CodecStore = 0 /*, CodecDeflate = 1, CodecZstd = 2 (reserved) */ };
 enum Dtype : std::uint8_t { DtypeF32   = 0 /*, DtypeF16 = 1 (reserved) */ };
@@ -91,12 +110,57 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
 // unknown codec|dtype / truncation / corruption.
 std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t maxJsonBytes);
 
+// What a `.namz` holds, read without making a single weight a JSON number. Owns everything; nothing in it
+// points back into the bytes it was decoded from.
+struct Decoded
+{
+    // The stored skeleton, parsed: the `.nam` with every numeric "weights" array replaced by the integer
+    // index of its segment, exactly as the file stores it (keys sorted), no deeper than kMaxDepth. version / architecture / config /
+    // metadata / sample_rate are here as the `.nam` had them; a SlimmableContainer's submodels sit at
+    // config.submodels[i].model, each with its own "weights" placeholder.
+    nlohmann::json skeleton;
+
+    // The float32 weights, one vector per segment, in index order — the very floats `unpack` prints.
+    // A segment is a std::vector<float> because that is what NAM's engine takes: it moves or copies
+    // straight in, with no reshaping on the way.
+    std::vector<std::vector<float>> segments;
+
+    // The segment `node`'s "weights" placeholder names — `weightsOf (skeleton)` is the top-level model's,
+    // `weightsOf (skeleton["config"]["submodels"][i]["model"])` a submodel's. nullptr when `node` holds
+    // no placeholder: not an object, no "weights" key, or a "weights" that is not an integer. Within this
+    // skeleton a placeholder always names a segment: decode refused any file where one did not.
+    const std::vector<float>* weightsOf (const nlohmann::json& node) const;
+
+    // Swap every placeholder under `node`, in place, for its segment as JSON numbers — the tree `unpack`
+    // dumps, so `auto j = d.skeleton; d.refill (j); j.dump()` is byte for byte unpack's output. For a
+    // loader that needs one subtree (a config holding a nested capture) as `.nam` JSON. False when a
+    // placeholder names no segment (a node from elsewhere); `node` is then partly filled — discard it.
+    bool refill (nlohmann::json& node) const;
+};
+
+// `.namz` bytes -> its skeleton and its float32 segments, the weights never printed or parsed. nullopt on
+// exactly what `unpack` refuses — bad magic, unknown version|codec|dtype, truncation, trailing bytes,
+// lengths that do not sum to the payload, a skeleton that is not JSON or nests deeper than kMaxDepth, a
+// placeholder naming no segment — with the size guard counted in floats rather than JSON bytes, because no
+// JSON is ever produced. `maxFloats` caps two things:
+//   - the floats the file stores, i.e. what decode allocates for them — checked before anything at all is
+//     allocated;
+//   - the floats its placeholders name, a segment named twice counted twice: what a loader filling every
+//     placeholder holds. Duplicate placeholders are the one way a small file asks for a large model —
+//     the zip bomb `unpack`'s maxJsonBytes stops by the size of the text it would print. Checked once the
+//     skeleton is parsed (straight from the buffer, so bounded by `n`), before a single float is allocated.
+// The cap counts floats, not what a caller makes of them: `refill` turns each 4-byte float into a JSON
+// number node, several times its size.
+std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxFloats);
+
 } // namespace namz
 
 #ifdef NAMZ_IMPLEMENTATION
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
+#include <utility>
 #include <nlohmann/json.hpp>
 
 namespace namz
@@ -247,6 +311,81 @@ namespace
                 refillWeights (v, segs, ok);
         }
     }
+
+    // unshuffleInto for one segment: `count` floats starting at float `first` of a payload of `total`
+    // floats, straight into the segment's own storage (plane b of float k sits at b * total + k).
+    void unshuffleSegment (const std::uint8_t* planes, std::size_t total, std::size_t first,
+                           std::size_t count, float* dst)
+    {
+        auto* d = reinterpret_cast<std::uint8_t*> (dst);
+        const std::uint8_t* p0 = planes + 0 * total + first;
+        const std::uint8_t* p1 = planes + 1 * total + first;
+        const std::uint8_t* p2 = planes + 2 * total + first;
+        const std::uint8_t* p3 = planes + 3 * total + first;
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            d[4 * i + 0] = p0[i];
+            d[4 * i + 1] = p1[i];
+            d[4 * i + 2] = p2[i];
+            d[4 * i + 3] = p3[i];
+        }
+    }
+
+    // True if `root` nests no deeper than `limit` — the rule of kMaxDepth: a scalar is 0, an array or object
+    // 1 + the deepest of its members. An explicit stack, never recursion: the tree it measures may be too deep
+    // to recurse through, and catching that is what it is for.
+    bool depthWithin (const json& root, std::size_t limit)
+    {
+        std::vector<std::pair<const json*, std::size_t>> todo { { &root, 0 } };   // a node, the containers above it
+        while (! todo.empty())
+        {
+            const auto [node, above] = todo.back();
+            todo.pop_back();
+            if (! node->is_structured())
+                continue;
+            if (above + 1 > limit)
+                return false;
+            for (const auto& member : *node)
+                todo.emplace_back (&member, above + 1);
+        }
+        return true;
+    }
+
+    // refillWeights' walk without the filling: every placeholder must name one of the `numArrays` segments
+    // whose u32 lengths sit at `lengths` (the check refill makes), and the floats they name — per
+    // placeholder, so a segment named twice counts twice — must stay within `maxFloats`. `named` never
+    // exceeds `maxFloats`, so the subtraction cannot wrap.
+    bool placeholdersFit (const json& node, const std::uint8_t* lengths, std::size_t numArrays,
+                          std::size_t maxFloats, std::size_t& named)
+    {
+        if (node.is_object())
+        {
+            for (auto it = node.begin(); it != node.end(); ++it)
+            {
+                if (it.key() == "weights" && it.value().is_number_integer())
+                {
+                    const auto idx = it.value().get<long long>();
+                    if (idx < 0 || (unsigned long long) idx >= numArrays)
+                        return false;
+                    const std::size_t len = getU32 (lengths + 4 * (std::size_t) idx);
+                    if (len > maxFloats - named)
+                        return false;
+                    named += len;
+                }
+                else if (! placeholdersFit (it.value(), lengths, numArrays, maxFloats, named))
+                {
+                    return false;
+                }
+            }
+        }
+        else if (node.is_array())
+        {
+            for (const auto& v : node)
+                if (! placeholdersFit (v, lengths, numArrays, maxFloats, named))
+                    return false;
+        }
+        return true;
+    }
 } // namespace
 
 bool isNamz (const void* data, std::size_t n) noexcept
@@ -265,6 +404,8 @@ std::vector<std::uint8_t> pack (const void* namJson, std::size_t n, const PackOp
     {
         auto j = json::parse (static_cast<const char*> (namJson),
                               static_cast<const char*> (namJson) + n);
+        if (! depthWithin (j, kMaxDepth))   // what pack writes, unpack and decode read back
+            return {};
 
         if (! opts.metadata.empty())
         {
@@ -375,6 +516,9 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
         for (std::size_t i = 0; i < numArrays; ++i)
         {
             lengths[i] = getU32 (p); p += 4; rem -= 4;
+            // Where size_t is 32 bits (wasm32, armv7), u32 lengths can wrap the sum back onto the payload
+            // size, and the slicing below would then read far past `flat`.
+            if (lengths[i] > (std::numeric_limits<std::size_t>::max)() - totalFloats) return {};
             totalFloats += lengths[i];
         }
 
@@ -402,6 +546,8 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
         }
 
         auto j = json::parse (skeleton);
+        if (! depthWithin (j, kMaxDepth))
+            return {};
         bool refillOk = true;
         refillWeights (j, segs, refillOk);
         if (! refillOk) return {};
@@ -412,6 +558,113 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
         return std::vector<std::uint8_t> (rebuilt.begin(), rebuilt.end());
     }
     catch (...) { return {}; }
+}
+
+const std::vector<float>* Decoded::weightsOf (const json& node) const
+{
+    if (! node.is_object())
+        return nullptr;
+    const auto it = node.find ("weights");
+    if (it == node.end() || ! it->is_number_integer())
+        return nullptr;
+    const auto idx = it->get<long long>();
+    if (idx < 0 || idx >= (long long) segments.size())
+        return nullptr;
+    return &segments[(std::size_t) idx];
+}
+
+bool Decoded::refill (json& node) const
+{
+    bool ok = true;
+    refillWeights (node, segments, ok);
+    return ok;
+}
+
+// unpack's reading of the body, step for step, refusing what it refuses — minus the dump to text, plus
+// the float cap. The stored floats meet the cap and the lengths meet the payload before anything is
+// allocated; the skeleton (bounded by `n`) is parsed and its depth and placeholders checked before a
+// single float is.
+std::optional<Decoded> decode (const void* namz, std::size_t n, std::size_t maxFloats)
+{
+    if (! isNamz (namz, n) || n < 8)
+        return std::nullopt;
+
+    const auto* bytes = static_cast<const std::uint8_t*> (namz);
+    const std::uint8_t fmt   = bytes[4];
+    const std::uint8_t codec = bytes[5];
+    const std::uint8_t dtype = bytes[6];
+    const std::uint8_t flags = bytes[7];
+    if (fmt > kFormatVersion || codec != CodecStore || dtype != DtypeF32)
+        return std::nullopt;
+
+    std::size_t off = 8;
+    if (fmt >= 2)
+    {
+        if (n < 10) return std::nullopt;
+        off = 10 + (std::size_t) getU16 (bytes + 8);
+        if (off > n) return std::nullopt;
+    }
+
+    const std::uint8_t* p = bytes + off;
+    std::size_t rem = n - off;   // bytes still unread from `p`
+
+    try
+    {
+        if (rem < 4) return std::nullopt;
+        const std::size_t skeletonLen = getU32 (p); p += 4; rem -= 4;
+        if (skeletonLen > rem) return std::nullopt;
+        const char* skeleton = reinterpret_cast<const char*> (p);
+        p += skeletonLen; rem -= skeletonLen;
+
+        if (rem < 4) return std::nullopt;
+        const std::size_t numArrays = getU32 (p); p += 4; rem -= 4;
+        if (numArrays > rem / 4) return std::nullopt;   // can't hold that many u32 lengths
+        const std::uint8_t* lengthBytes = p;
+        p += 4 * numArrays; rem -= 4 * numArrays;
+
+        // The float32 payload must be EXACTLY the rest of the buffer, and the floats it stores within the
+        // cap — both known before anything is allocated. Each length is checked against what is left of the
+        // payload, so the sum can neither overflow nor wrap — on a 32-bit size_t included. The lengths are
+        // read where they lie, never copied out.
+        if (rem % sizeof (float) != 0) return std::nullopt;
+        const std::size_t totalFloats = rem / sizeof (float);
+        if (totalFloats > maxFloats) return std::nullopt;
+        const auto lengthOf = [lengthBytes] (std::size_t i) { return (std::size_t) getU32 (lengthBytes + 4 * i); };
+        std::size_t summed = 0;
+        for (std::size_t i = 0; i < numArrays; ++i)
+        {
+            const std::size_t len = lengthOf (i);
+            if (len > totalFloats - summed) return std::nullopt;
+            summed += len;
+        }
+        if (summed != totalFloats) return std::nullopt;
+
+        Decoded out;
+        out.skeleton = json::parse (skeleton, skeleton + skeletonLen);
+        if (! depthWithin (out.skeleton, kMaxDepth)) return std::nullopt;
+        std::size_t named = 0;
+        if (! placeholdersFit (out.skeleton, lengthBytes, numArrays, maxFloats, named))
+            return std::nullopt;
+
+        out.segments.resize (numArrays);
+        std::size_t first = 0;
+        for (std::size_t i = 0; i < numArrays; ++i)
+        {
+            const std::size_t len = lengthOf (i);
+            auto& seg = out.segments[i];
+            seg.resize (len);
+            if (len > 0)
+            {
+                if ((flags & FlagShuffle) != 0)
+                    unshuffleSegment (p, totalFloats, first, len, seg.data());
+                else
+                    std::memcpy (seg.data(), p + first * sizeof (float), len * sizeof (float));
+            }
+            first += len;
+        }
+        return out;
+    }
+    catch (...) { return std::nullopt; }
 }
 
 std::map<std::string, std::string> readMeta (const void* namz, std::size_t n)
@@ -428,7 +681,7 @@ std::map<std::string, std::string> readMeta (const void* namz, std::size_t n)
     try
     {
         auto j = json::parse (bytes + 10, bytes + 10 + metaLen);
-        if (j.is_object())
+        if (j.is_object() && depthWithin (j, kMaxDepth))
             for (auto it = j.begin(); it != j.end(); ++it)
             {
                 const auto& v = it.value();

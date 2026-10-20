@@ -38,3 +38,39 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+  # size_t is 32 bits wide on wasm32 (and armv7), so segment lengths whose sum wraps are a heap over-read
+  # there and nowhere on the 64-bit rows above. This row runs every suite as wasm32 under AddressSanitizer.
+  wasm32-asan:
+    name: wasm32 + AddressSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EMSDK_VERSION: 6.0.9
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install emsdk
+        run: |
+          git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+
+      # -fexceptions: without it every throw aborts, and the readers turn a caught throw into a refusal.
+      # NODERAWFS: the conformance suites read their vectors straight off the runner's disk.
+      - name: Configure
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release -DNAMZ_BUILD_CLI=OFF \
+            "-DCMAKE_CXX_FLAGS=-fexceptions -fsanitize=address" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fexceptions -fsanitize=address -sALLOW_MEMORY_GROWTH=1 -sNODERAWFS=1"
+
+      - name: Build
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          cmake --build build-wasm
+
+      - name: Test
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          ctest --test-dir build-wasm --output-on-failure

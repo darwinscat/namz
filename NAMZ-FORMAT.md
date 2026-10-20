@@ -36,19 +36,57 @@ little-endian IEEE-754.
 ```
 
 `unpack` un-shuffles the payload, rebuilds the JSON (weights re-inserted as float32 numbers) and hands it
-to the usual `parse → NAM engine` path, so the loaded model is identical.
+to the usual `parse → NAM engine` path, so the loaded model is identical. That path prints every weight
+as decimal text only for the loader to parse it back; `decode` stops before the text. It parses the
+skeleton as stored — each placeholder still an integer — and un-shuffles the payload straight into one
+float32 vector per segment, so a loader that builds its model itself reads the architecture and config
+from the skeleton and takes each model's weights from the segment its placeholder names. Filling every
+placeholder with its segment and dumping the tree gives exactly the bytes `unpack` returns.
+
+## Placeholders and depth
+
+Two rules decide what a reader accepts beyond the byte layout. They are stated here exactly, for a port to
+follow word for word; `unpack` and `decode` share both.
+
+**Placeholder.** A placeholder is an object member, at any depth of the skeleton, named exactly `weights`,
+whose value is an integer literal — no fraction, no exponent — that fits a signed or an unsigned 64-bit
+integer. `-0` is one, and names segment 0. A placeholder names segment `value` and must satisfy
+`0 ≤ value < numArrays`; `unpack` and `decode` both refuse the file otherwise. So `9223372036854775808`
+(it fits an unsigned 64-bit integer) is a placeholder naming no segment, and the file is refused. Any other
+`weights` value is not a placeholder and stays the number it is: `1.0` has a fraction, `0e0` an exponent,
+`18446744073709551616` is past every 64-bit integer and reads as a double; the reference prints them back
+as `1.0`, `0.0` and `1.8446744073709552e+19`. A segment no placeholder names is allowed; a segment named
+by several placeholders fills each of them.
+
+**Depth.** A scalar has depth 0; an array or object has 1 + the greatest depth of its members, so an empty
+one has depth 1. The limit is **128** (`namz::kMaxDepth`): `unpack` and `decode` refuse a skeleton deeper
+than 128; `pack` refuses a `.nam` deeper than 128, so everything it writes reads back; `readMeta` returns no
+metadata for a meta block deeper than 128 (the meta block takes no part in `unpack`'s or `decode`'s
+verdict). Real captures nest about 10 deep. The limit is what keeps every recursive walk over the tree —
+the reader's own, a JSON library's print and compare, a loader's model builder — off the end of the stack.
+
+The C++ reference states both rules as of 4.3.0; the language ports and the conformance vectors follow them
+in their own releases.
 
 ## Contracts (enforced by the tests)
 
 - **Lossless to float32** — for every weight, `unpack(pack(x)) == (float)x`, bit-exact, at any nesting
-  depth (incl. `SlimmableContainer` submodels). Verified across `-0.0`, subnormals, and `FLT_MAX`.
+  depth up to 128 (incl. `SlimmableContainer` submodels). Verified across `-0.0`, subnormals, and `FLT_MAX`.
 - **Metadata/config preserved** verbatim — nested objects, `null`, unicode, big doubles, escapes.
 - **Deterministic** — `pack(x)` is byte-identical across runs and platforms (no compressor, so no
   zlib/gzip header variation); the codec is idempotent (`pack(unpack(pack(x))) == pack(x)`).
-- **Robust** — `unpack` never crashes/hangs/OOMs; every malformed input (bad magic, unknown
-  version/codec/dtype, truncation at any byte, a lying `metaLen`, a huge `numArrays`, an oversized body
-  over the output cap) is rejected cleanly and returns empty. Because the body is stored (no self-healing
-  compressed stream), **any** truncation or trailing junk fails the exact-length check.
+- **Robust** — `unpack`, `decode`, `readMeta` and `pack` never crash, hang or run out of memory on any
+  input, the stack included: memory is linear in the input and bounded by the caps, and no walk recurses
+  deeper than 128. Every malformed `.namz` (bad magic, unknown version/codec/dtype, truncation at any byte,
+  a lying `metaLen`, a huge `numArrays`, lengths whose sum overflows — a 32-bit `size_t` included — a
+  placeholder that names no segment, a skeleton nested deeper than 128, a body over the output cap) is
+  refused cleanly: `unpack` returns empty, `decode` nothing. `readMeta` returns no metadata for a block it
+  cannot read; `pack` returns empty for a `.nam` that is not JSON or nests deeper than 128. Because the body is stored (no self-healing compressed stream), **any**
+  truncation or trailing junk fails the exact-length check.
+- **Two readers, one verdict** — `decode` refuses exactly the inputs `unpack` refuses, its size cap aside:
+  `unpack` caps the JSON it would print, `decode` the floats — those the file stores, and those its
+  placeholders name, a segment named twice counted twice (the one way a small file asks for a large
+  model). Where both accept, `decode` refilled and dumped is `unpack`'s output, byte for byte.
 - **Compatible** — `formatVersion 1` blobs (no meta block) still unpack; `readMeta` returns empty for
   v1 / non-`.namz`, and the typed display fields for v2.
 
