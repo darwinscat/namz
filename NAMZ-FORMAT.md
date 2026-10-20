@@ -19,7 +19,7 @@ little-endian IEEE-754.
 
 ```
 [0..3]   magic          'N','A','M','Z'
-[4]      formatVersion  2   (readers still accept 1 = no meta block)
+[4]      formatVersion  2   (readers still accept 1 = no meta block; every other value, 0 included, is refused)
 [5]      codec          0 = store/uncompressed;       1 = deflate (reserved), 2 = zstd (reserved)
 [6]      dtype          0 = float32;                  1 = float16 (reserved, lossy)
 [7]      flags          bit0 = weight bytes shuffled into 4 byte-planes (lossless; groups the
@@ -45,8 +45,8 @@ placeholder with its segment and dumping the tree gives exactly the bytes `unpac
 
 ## Placeholders and depth
 
-Two rules decide what a reader accepts beyond the byte layout. They are stated here exactly, for a port to
-follow word for word; `unpack` and `decode` share both.
+These rules decide what a reader accepts beyond the byte layout. They are stated here exactly, for a port to
+follow word for word; `unpack` and `decode` share all of them.
 
 **Placeholder.** A placeholder is an object member, at any depth of the skeleton, named exactly `weights`,
 whose value is an integer literal — no fraction, no exponent — that fits a signed or an unsigned 64-bit
@@ -56,17 +56,46 @@ integer. `-0` is one, and names segment 0. A placeholder names segment `value` a
 `weights` value is not a placeholder and stays the number it is: `1.0` has a fraction, `0e0` an exponent,
 `18446744073709551616` is past every 64-bit integer and reads as a double; the reference prints them back
 as `1.0`, `0.0` and `1.8446744073709552e+19`. A segment no placeholder names is allowed; a segment named
-by several placeholders fills each of them.
+by several placeholders fills each of them. Two `weights` keys in one object are one member: the last one
+counts, as in the reference's JSON library.
+
+A placeholder is `pack`'s to write, never the input's: `pack` refuses a `.nam` in which a member named
+`weights`, at any depth, holds an integer literal by the rule above — the metadata `pack` stamps in
+included. Stored, it would be a placeholder: `"config":{"weights":0}` would read back as segment 0's
+array, and `"weights":7` would name a segment that does not exist, so both readers would refuse the file
+`pack` just wrote. A `weights` value that is no integer literal (`1.0`, `0e0`, a string, an object, an
+array that is not all numbers) is packed as the value it is.
 
 **Depth.** A scalar has depth 0; an array or object has 1 + the greatest depth of its members, so an empty
-one has depth 1. The limit is **128** (`namz::kMaxDepth`): `unpack` and `decode` refuse a skeleton deeper
-than 128; `pack` refuses a `.nam` deeper than 128, so everything it writes reads back; `readMeta` returns no
-metadata for a meta block deeper than 128 (the meta block takes no part in `unpack`'s or `decode`'s
-verdict). Real captures nest about 10 deep. The limit is what keeps every recursive walk over the tree —
-the reader's own, a JSON library's print and compare, a loader's model builder — off the end of the stack.
+one has depth 1. Depth is counted **as written**: on the text, before it is parsed, by the brackets outside
+strings — so a member a later duplicate key replaces still counts (`{"x":<128 arrays around 0>,"x":0}` is
+129 deep, whichever `x` a parser keeps). The limit is **128** (`namz::kMaxDepth`): `unpack` and `decode`
+refuse a skeleton deeper than 128; `pack` refuses a `.nam` deeper than 128, so everything it writes reads
+back; `readMeta` returns no metadata for a meta block deeper than 128 (the meta block takes no part in
+`unpack`'s or `decode`'s verdict). Real captures nest about 10 deep. The limit is what keeps every recursive
+walk over the tree — the reader's own, a JSON library's print and compare, a loader's model builder — off
+the end of the stack.
 
-The C++ reference states both rules as of 4.3.0; the language ports and the conformance vectors follow them
-in their own releases.
+**Finite weights.** Every float the payload stores is a finite float32. `unpack` and `decode` refuse a file
+whose payload holds a NaN or an infinity, whether a placeholder names its segment or not; `pack` refuses a
+`.nam` holding a weight whose float32 is not finite — `1e39` is a finite JSON number past the float32 range
+(`3.4028235e38` rounds to `FLT_MAX` and is kept).
+
+**JSON text.** Every JSON text — the `.nam`, the skeleton, the meta block — is UTF-8, one leading byte-order
+mark skipped; UTF-16 or UTF-32 is not JSON text here. It is refused wherever the reference's JSON library
+(nlohmann/json 3.11) refuses it, a value a later duplicate key replaces included: an escaped lone surrogate
+(`"\ud800"`), a number past every double (`1e400`, an integer literal of 400 digits). The reference prints
+a double with that library's digits — Grisu2, which is neither always the shortest nor always the closest
+(`-198.70986938476562` prints as `-198.70986938476563`) — in fixed form while the decimal point sits within
+15 digits of the first one, else as `d.ddde±XX` (`1e+15`, `1e-05`, `1.8446744073709552e+19`). A port prints
+the same bytes; the shortest round-trip digits of its own language are not them. `readMeta` prints an
+integer as its digits, signed or unsigned, any other number as C's `"%f"` (six decimals, an exact tie to
+even), and an array or object as the reference prints it.
+
+The C++ reference states the placeholder and depth rules as of 4.3.0, and all of them as of 4.3.1; as of
+4.3.1 the conformance vectors pin them, the refusals of a `.nam` that holds a placeholder and of
+`formatVersion 0` included, and both language ports follow them (`@darwins-cat/namz` and `namz` on PyPI,
+1.2.0).
 
 ## Contracts (enforced by the tests)
 
@@ -79,19 +108,23 @@ in their own releases.
   input, the stack included: memory is linear in the input and bounded by the caps, and no walk recurses
   deeper than 128. Every malformed `.namz` (bad magic, unknown version/codec/dtype, truncation at any byte,
   a lying `metaLen`, a huge `numArrays`, lengths whose sum overflows — a 32-bit `size_t` included — a
-  placeholder that names no segment, a skeleton nested deeper than 128, a body over the output cap) is
-  refused cleanly: `unpack` returns empty, `decode` nothing. `readMeta` returns no metadata for a block it
-  cannot read; `pack` returns empty for a `.nam` that is not JSON or nests deeper than 128. Because the body is stored (no self-healing compressed stream), **any**
+  placeholder that names no segment, a skeleton nested deeper than 128, a payload float that is NaN or
+  infinite, a body over the output cap) is refused cleanly: `unpack` returns empty, `decode` nothing.
+  `readMeta` returns no metadata for a block it cannot read; `pack` returns empty for a `.nam` that is not
+  JSON, nests deeper than 128, holds an integer `weights` member, or holds a weight whose float32 is not
+  finite. Because the body is stored (no self-healing compressed stream), **any**
   truncation or trailing junk fails the exact-length check.
 - **Two readers, one verdict** — `decode` refuses exactly the inputs `unpack` refuses, its size cap aside:
   `unpack` caps the JSON it would print, `decode` the floats — those the file stores, and those its
   placeholders name, a segment named twice counted twice (the one way a small file asks for a large
   model). Where both accept, `decode` refilled and dumped is `unpack`'s output, byte for byte.
 - **Compatible** — `formatVersion 1` blobs (no meta block) still unpack; `readMeta` returns empty for
-  v1 / non-`.namz`, and the typed display fields for v2.
+  v1 / non-`.namz`, and the typed display fields for v2. Only 1 and 2 are defined: a `formatVersion` of 0
+  is refused like any unknown one.
 
-> Out of contract: non-finite weights (`NaN`/`±Inf`). Real NAM captures never contain them; JSON can't
-> represent them either. The codec targets the finite float32 range NAM produces.
+> Refused: non-finite weights (`NaN`/`±Inf`), on the way in and on the way out (see "Finite weights").
+> Real NAM captures never contain them; JSON can't represent them either. The codec targets the finite
+> float32 range NAM produces.
 
 ## The metadata header
 

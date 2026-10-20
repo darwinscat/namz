@@ -239,13 +239,13 @@ int main()
         // a lying metaLen (v2 header, bytes 8..9) larger than the buffer.
         { auto m = base; m[8] = 0xff; m[9] = 0xff; CHECK (namz::unpack (m.data(), m.size(), kCap).empty(), "crafted: metaLen > buffer rejected"); }
 
-        // every version/codec/dtype byte value: only (ver<=2, codec 0, dtype 0) may decode.
+        // every version/codec/dtype byte value: only (ver 1 or 2, codec 0, dtype 0) may decode.
         bool onlyValidAccepted = true;
         for (int v = 0; v < 256; ++v)
         {
             auto m = base; m[4] = (std::uint8_t) v;
             bool ok = ! namz::unpack (m.data(), m.size(), kCap).empty();
-            if (ok && v > 2) onlyValidAccepted = false;            // future version must be refused
+            if (ok && (v == 0 || v > 2)) onlyValidAccepted = false;   // 0 and future versions must be refused
         }
         for (int c = 1; c < 256; ++c) { auto m = base; m[5] = (std::uint8_t) c; if (! namz::unpack (m.data(), m.size(), kCap).empty()) onlyValidAccepted = false; }
         for (int d = 1; d < 256; ++d) { auto m = base; m[6] = (std::uint8_t) d; if (! namz::unpack (m.data(), m.size(), kCap).empty()) onlyValidAccepted = false; }
@@ -269,6 +269,10 @@ int main()
         CHECK (! back.is_null(), "v1: unpacks");
         CHECK (back["weights"].size() == 3, "v1: weights intact");
         CHECK (namz::readMeta (v1.data(), v1.size()).empty(), "v1: readMeta empty (no header block)");
+        // version 0 is not version 1: the very same bytes with a 0 are refused by both readers
+        bytes v0 = v1; v0[4] = 0;
+        CHECK (namz::unpack (v0.data(), v0.size(), kCap).empty() && ! namz::decode (v0.data(), v0.size(), kMaxFloats).has_value(),
+               "v0: formatVersion 0 is refused by unpack and by decode");
     }
 
     // === 8) DEEP NESTING + MANY ARRAYS — recursion/scale must not crash or lose weights ===
@@ -532,6 +536,64 @@ int main()
             CHECK (namz::readMeta (m129.data(), m129.size()).empty(), "depth: readMeta returns nothing for a meta block 129 deep");
         }
 
+        // depth is counted as written: a member a later duplicate key replaces still counts, so every reader
+        // reaches the verdict of the text, whichever duplicate its parser keeps
+        {
+            const std::string nam = "{\"x\":" + nested (128) + ",\"x\":0,\"weights\":[0.5]}";
+            CHECK (namz::pack (nam.data(), nam.size()).empty(),
+                   "depth: pack refuses a .nam 129 deep in a member a later duplicate key replaces");
+            const auto blob = craft ("{\"weights\":0,\"x\":" + nested (128) + ",\"x\":0}", { 1u }, 1);
+            CHECK (namz::unpack (blob.data(), blob.size(), kCap).empty() && ! namz::decode (blob.data(), blob.size(), kMaxFloats).has_value(),
+                   "depth: unpack and decode refuse a skeleton 129 deep in a member a later duplicate key replaces");
+            const auto meta = withMeta (craft ("{\"weights\":0}", { 1u }, 1), "{\"a\":" + nested (128) + ",\"a\":0,\"name\":\"n\"}");
+            CHECK (namz::readMeta (meta.data(), meta.size()).empty(),
+                   "depth: readMeta returns nothing for a meta block 129 deep in a member a later duplicate key replaces");
+            // brackets inside a string are text, an escaped quote included
+            const std::string inString = "{\"s\":\"\\\"" + std::string (200, '[') + "\",\"weights\":[0.5]}";
+            const auto p = namz::pack (inString.data(), inString.size());
+            CHECK (! p.empty() && unpackToJson (p) == json::parse (inString) && decodeAgrees (p),
+                   "depth: brackets inside a string, after an escaped quote, do not count");
+        }
+
+        // a weight whose float32 is not finite is refused on the way in, and a payload float that is NaN or
+        // infinite on the way out, named by a placeholder or not
+        {
+            bool refused = true;
+            for (const char* nam : { "{\"weights\":[1e39]}", "{\"weights\":[0.5,-1e39]}",
+                                     "{\"a\":{\"weights\":[3.5e38]},\"weights\":[0.5]}" })
+                if (! namz::pack (nam, std::strlen (nam)).empty())
+                    refused = false;
+            const char* edge = "{\"weights\":[3.4028235e38,-3.4028235e38]}";   // both round to a finite FLT_MAX
+            const auto pe = namz::pack (edge, std::strlen (edge));
+            CHECK (refused && ! pe.empty() && decodeAgrees (pe),
+                   "pack: a weight past the float32 range is refused; one that rounds to FLT_MAX is kept");
+            const auto withLast = [] (bytes b, std::uint32_t bits)
+            {
+                for (int k = 0; k < 4; ++k) b[b.size() - 4 + (std::size_t) k] = (std::uint8_t) (bits >> (8 * k));
+                return b;
+            };
+            bool readersRefuse = true;
+            for (const std::uint32_t bits : { 0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7F800001u, 0xFFFFFFFFu })
+            {
+                const auto named   = withLast (craft ("{\"weights\":0}", { 2u }, 2), bits);
+                const auto unnamed = withLast (craft ("{\"weights\":0}", { 1u, 1u }, 2), bits);
+                for (const auto* b : { &named, &unnamed })
+                    if (! namz::unpack (b->data(), b->size(), kCap).empty() || namz::decode (b->data(), b->size(), kMaxFloats).has_value())
+                        readersRefuse = false;
+            }
+            CHECK (readersRefuse, "unpack, decode: a payload float that is NaN or infinite is refused, named by a placeholder or not");
+        }
+
+        // readMeta prints an integer past int64 as the digits it is, never wrapped to a negative one
+        {
+            const auto m = withMeta (craft ("{\"weights\":0}", { 1u }, 1),
+                                     "{\"i\":-9223372036854775808,\"u\":9223372036854775808,\"w\":18446744073709551615}");
+            const auto meta = namz::readMeta (m.data(), m.size());
+            CHECK (meta.size() == 3 && meta.at ("i") == "-9223372036854775808" && meta.at ("u") == "9223372036854775808"
+                   && meta.at ("w") == "18446744073709551615",
+                   "readMeta: an integer past int64 is printed as its own digits");
+        }
+
         // the stored-floats cap comes before any allocation: a million lengths and one float of payload,
         // over a cap of zero, cost not one byte
         {
@@ -544,6 +606,32 @@ int main()
             gCounting = false;
             if (gAllocated != 0) std::fprintf (stderr, "      (allocated %zu bytes before refusing)\n", gAllocated);
             CHECK (refused && gAllocated == 0, "decode: over the stored-floats cap -> refused before a single byte is allocated");
+        }
+
+        // pack refuses a .nam in which a "weights" member holds an integer literal — it would be stored as a
+        // placeholder, so config.weights 0 read back as segment 0's array and "weights":7 named no segment. A
+        // "weights" that is no integer literal is packed as the value it is and reads back unchanged.
+        {
+            bool refused = true;
+            for (const char* nam : { "{\"weights\":7}", "{\"architecture\":\"X\",\"config\":{\"weights\":0},\"weights\":[0.5]}",
+                                     "{\"weights\":-0}", "{\"weights\":18446744073709551615}",
+                                     "{\"a\":[{\"b\":{\"weights\":-3}}],\"weights\":[1.5]}" })
+                if (! namz::pack (nam, std::strlen (nam)).empty())
+                    refused = false;
+            namz::PackOptions stamp; stamp.metadata["weights"] = "7";   // typed to the integer 7 on the way in
+            const std::string plain = "{\"weights\":[0.5]}";
+            CHECK (refused && namz::pack (plain.data(), plain.size(), stamp).empty(),
+                   "pack: an integer \"weights\" member, at any depth or stamped as metadata, is refused");
+            bool kept = true;
+            for (const char* nam : { "{\"weights\":1.0}", "{\"weights\":0e0}", "{\"weights\":18446744073709551616}",
+                                     "{\"weights\":\"7\"}", "{\"weights\":true}", "{\"weights\":null}",
+                                     "{\"weights\":{\"a\":1}}", "{\"weights\":[\"a\",1]}" })
+            {
+                const auto p = namz::pack (nam, std::strlen (nam));
+                if (p.empty() || unpackToJson (p) != json::parse (nam) || ! decodeAgrees (p))
+                    kept = false;
+            }
+            CHECK (kept, "pack: a \"weights\" that is no integer literal is packed as the value it is and reads back unchanged");
         }
 
         // last, because this is where the suite used to die: nesting far past the limit is refused without

@@ -6,6 +6,71 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.3.1] — 2026-10-20 — one verdict, one set of bytes, in every reader
+
+### Fixed
+- **`pack` refuses a `.nam` whose `"weights"` member holds an integer literal**, at any depth, the
+  metadata it stamps included. The skeleton stores such a member as it is, and a reader cannot tell it from
+  a placeholder: `"config":{"weights":0}` came back from `unpack` as the top-level weights array, and
+  `"weights":7` packed into a file both readers then refused. A `weights` that is no integer literal —
+  `1.0`, `0e0`, an integer past uint64, a string, an object — is packed as before. NAMZ-FORMAT.md states it
+  under "Placeholders and depth".
+- **`formatVersion` 0 is refused.** The readers checked only `fmt > 2`, so a 0 read as a v1 container;
+  only 1 and 2 are defined. `unpack` and `decode` refuse it like any unknown version.
+- **Depth is counted as written.** 4.3.0 measured the parsed tree, so a member a later duplicate key
+  replaced escaped the count: `{"x":<128 arrays around 0>,"x":0}` packed, unpacked and read as metadata,
+  where both language ports refused it. Every reader now counts the brackets outside strings before it
+  parses — one pass, no tree — and refuses 129 however the duplicates fall.
+- **A weight is a finite float32.** `pack` refuses a `.nam` holding a weight whose float32 is not finite:
+  `1e39` packed as `+inf` and came back as `null`. `unpack` and `decode` refuse a payload float that is NaN or
+  infinite, named by a placeholder or not: `unpack` printed `null`. Both ports already refused these;
+  NAMZ-FORMAT.md's "out of contract" note becomes the rule "Finite weights".
+- **`readMeta` prints an integer past int64 as its digits.** `9223372036854775808` came back as
+  `-9223372036854775808`.
+- **`NAMZ_VERSION` is 4.3.1**, and so is the CMake project.
+
+### Conformance
+The vectors now pin what 4.3.0 stated and the fixes above; every verdict comes from the reference CLI, and
+`generate.py` stops if the CLI disagrees with the one it records — or neither does nor refuses: a refusal is
+exit 1 with the CLI's own "encode failed" / "decode failed", so a crash no longer passes for one. Two new
+manifest sections: `decodeOnly` (a `.namz` pack never writes, with the exact `.nam` the reference decodes it
+to) and `invalidNam` (a `.nam` pack must refuse).
+- `valid`: `depth-128` (two branches exactly 128 deep: arrays around a scalar, objects and arrays around an
+  empty array), `weights-not-placeholders` (`1.0`, `0e0`, `18446744073709551616` kept as numbers) and
+  `skeleton-doubles` (digits Grisu2 picks its own way, and the edges of fixed and exponent form).
+- `invalid`: `version-zero`, `length-sum-wrap` (lengths `{2, 0xFFFFFFFF}` over one float),
+  `placeholder-past-segments`, `placeholder-negative`, `placeholder-uint64`, `placeholder-duplicate-key`
+  (the last of two keys counts), `depth-129-scalar`, `depth-129-empty`, `depth-129-objects`, `depth-10000`,
+  `depth-129-duplicate-key`, `skeleton-integer-overflow`, `skeleton-utf16`, `skeleton-lone-surrogate`,
+  `payload-inf`, `payload-nan` (in a segment no placeholder names).
+- `decodeOnly`: `version-1`, `placeholder-minus-zero`, `placeholder-fraction`, `placeholder-exponent`,
+  `placeholder-past-uint64`, `placeholder-duplicate-key`, `float-digits` (float32 values Grisu2 prints
+  differently from the shortest digits, and 2^50 as `1.125899906842624e+15`).
+- `invalidNam`: `weights-integer`, `weights-integer-nested`, `weights-minus-zero`, `depth-129`,
+  `depth-129-duplicate-key`, `utf16`, `lone-surrogate`, `weights-float32-overflow`.
+
+### Language ports
+Both ports follow every rule above and pass every new vector: **`@darwins-cat/namz` 1.2.0** (npm) and
+**`namz` 1.2.0** (PyPI). Each exports `MAX_DEPTH` (128, the reference's `kMaxDepth`).
+- **Both print a double with the reference's digits** — a port of nlohmann's Grisu2 (`dtoa_impl`) and its
+  fixed/exponent rule. They printed the shortest digits, so `unpack` of every real capture differed from the
+  reference in about 20 of 14,000 numbers (`-0.25354045629501343` came out `-0.2535404562950134`), and `pack`
+  of a skeleton double did 1 time in 1,000; Python also printed 1e15 to 1e16 in fixed form
+  (`1000000000000000.0` for `1e+15`). Checked against the reference over 800,000 doubles and float32 values.
+- Depth: the JS parser counts the containers it is inside and refuses the 129th before descending into it;
+  Python measures the text before `json.loads` sees it, so a 100,000-deep `.nam` or skeleton — which crashed
+  the Python port with `RecursionError` — is refused.
+- The placeholder rule needed no change in either: the JS parser already kept each literal's form and
+  Python's `json` tells `1` from `1.0`; the vectors now hold them to it.
+- **Python** reads JSON text as UTF-8 only (it guessed UTF-16 and UTF-32 and packed them); refuses a number
+  past every double where it raised `OverflowError` out of `unpack`, and where a later duplicate key
+  dropped it; refuses an escaped lone surrogate the same way; prints a nested `read_meta` value as the
+  reference does (`[1,2.5]`, not `[1, 2.5]`); refuses a weight past float32 without numpy's warning; and
+  refuses a NaN in a segment no placeholder names. Printing its own digits costs time: `unpack` of a
+  15,000-float capture takes about 47 ms, against 5 ms.
+- **JS** refuses an escaped lone surrogate (`JSON.parse` takes one) and prints a `readMeta` float as C's
+  `"%f"` (`0.0078125` is `0.007812`, a tie to even; `toFixed` gave `0.007813`).
+
 ## [4.3.0] — 2026-10-20 — a model loads without printing its weights
 
 ### Added

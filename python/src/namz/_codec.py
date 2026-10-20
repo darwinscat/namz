@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
-import json
 import struct
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
+
+from . import _json
+from ._json import MAX_DEPTH
 
 __all__ = [
     "pack",
@@ -24,28 +26,24 @@ __all__ = [
     "PackOptions",
     "FORMAT_VERSION",
     "DEFAULT_MAX_JSON_BYTES",
+    "MAX_DEPTH",
 ]
 
 # -- wire constants (mirror include/namz.h) --------------------------------------------------------
 MAGIC = b"NAMZ"
-FORMAT_VERSION = 2  # readers still accept 1 (no meta block)
+FORMAT_VERSION = 2  # readers accept 1 (no meta block) and 2, nothing else
 
 _CODEC_STORE = 0  # 1 = deflate, 2 = zstd (reserved)
 _DTYPE_F32 = 0  # 1 = float16 (reserved, lossy)
 _FLAG_SHUFFLE = 1 << 0  # payload bytes split into 4 planes (lossless)
 
 _INT64_MAX = (1 << 63) - 1
-_INT64_MIN = -(1 << 63)
-_UINT64_MAX = (1 << 64) - 1
 
 #: Default cap on the reconstructed `.nam` JSON (zip-bomb guard), matching the reference CLI.
 DEFAULT_MAX_JSON_BYTES = 256 * 1024 * 1024
 
-# JSON serialization tuned to byte-match nlohmann's ``dump()``: minified, keys sorted ascending, raw
-# UTF-8 (nlohmann does not escape non-ASCII by default). ``allow_nan=False`` makes serialization RAISE on
-# any non-finite value rather than emit Python's non-standard ``NaN``/``Infinity`` tokens — non-finite is
-# out of contract, so callers turn that raise into a clean rejection.
-_JSON_KW = dict(sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+# MAX_DEPTH (from ._json): :func:`pack` refuses a deeper ``.nam``, :func:`unpack` a deeper skeleton, and
+# :func:`read_meta` reads a deeper metadata block as no metadata.
 
 
 @dataclass
@@ -87,16 +85,6 @@ def _type_value(s: str) -> Union[bool, int, str]:
     return s
 
 
-def _reject_nonfinite(_token: str) -> float:
-    """Reject the ``NaN`` / ``Infinity`` / ``-Infinity`` JSON literals.
-
-    Python's ``json`` accepts them by default; the C++ reference (nlohmann) does not — and non-finite
-    weights are explicitly out of contract. Raising here makes :func:`pack` reject the same inputs the
-    reference rejects (returns ``b""``).
-    """
-    raise ValueError("non-finite JSON literal")
-
-
 def _is_numeric_weights(v: Any) -> bool:
     """True iff ``v`` is a JSON array of numbers (bools are NOT numbers, matching nlohmann)."""
     if not isinstance(v, list):
@@ -107,17 +95,28 @@ def _is_numeric_weights(v: Any) -> bool:
     return True
 
 
+def _is_placeholder_int(v: Any) -> bool:
+    """True iff ``v`` is an integer literal — :func:`_json.loads` keeps one only within int64 or uint64, as
+    nlohmann does, and makes any other a float."""
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def _extract_weights(node: Any, out: List[np.ndarray]) -> None:
     """DFS: pull every numeric ``"weights"`` array into ``out`` and replace it with its ordinal index.
 
     Objects are traversed in **sorted key order** to match nlohmann (``std::map``); this fixes both the
-    ordinal indices and the concatenation order of the payload.
+    ordinal indices and the concatenation order of the payload. A ``"weights"`` member that already holds an
+    integer literal raises: the skeleton would store it as a placeholder, which a reader fills with a segment
+    or refuses.
     """
     if isinstance(node, dict):
         for key in sorted(node.keys()):
             val = node[key]
+            if key == "weights" and _is_placeholder_int(val):
+                raise ValueError('an integer "weights" member would read back as a placeholder')
             if key == "weights" and _is_numeric_weights(val):
-                out.append(np.asarray(val, dtype=np.float32))
+                with np.errstate(over="ignore"):  # past the float32 range is refused below, without a warning
+                    out.append(np.asarray(val, dtype=np.float32))
                 node[key] = len(out) - 1
             else:
                 _extract_weights(val, out)
@@ -127,7 +126,8 @@ def _extract_weights(node: Any, out: List[np.ndarray]) -> None:
 
 
 def _refill_weights(node: Any, segs: List[np.ndarray]) -> bool:
-    """DFS inverse: swap each integer ``"weights"`` placeholder for its float segment.
+    """DFS inverse: swap each integer ``"weights"`` placeholder for its float segment (the float32 array
+    itself, which :func:`_json.dumps` prints).
 
     Returns ``False`` if any placeholder index is out of range — the signature of a corrupt stream.
     """
@@ -137,7 +137,7 @@ def _refill_weights(node: Any, segs: List[np.ndarray]) -> bool:
             val = node[key]
             if key == "weights" and isinstance(val, int) and not isinstance(val, bool):
                 if 0 <= val < len(segs):
-                    node[key] = segs[val].tolist()
+                    node[key] = segs[val]
                 else:
                     ok = False
             elif not _refill_weights(val, segs):
@@ -147,29 +147,6 @@ def _refill_weights(node: Any, segs: List[np.ndarray]) -> bool:
             if not _refill_weights(item, segs):
                 ok = False
     return ok
-
-
-def _coerce_oversized_ints(node: Any) -> Any:
-    """Match nlohmann: an integer literal outside ``[int64_min, uint64_max]`` is stored as a double.
-
-    Applied only to the (weightless) skeleton tree, so it stays cheap. Returns the coerced node. This is
-    byte-exact with the reference whenever the value is double-representable (e.g. ``2**64``); for extreme
-    23+-digit magnitudes nlohmann's own number parser is not correctly rounded and may differ by one ULP,
-    but such integers never appear in NAM config (which holds small dimensions and a few simple decimals).
-    """
-    if isinstance(node, bool):
-        return node
-    if isinstance(node, int):
-        return node if _INT64_MIN <= node <= _UINT64_MAX else float(node)
-    if isinstance(node, dict):
-        for k in node:
-            node[k] = _coerce_oversized_ints(node[k])
-        return node
-    if isinstance(node, list):
-        for i in range(len(node)):
-            node[i] = _coerce_oversized_ints(node[i])
-        return node
-    return node
 
 
 def _shuffle(flat: np.ndarray) -> bytes:
@@ -193,19 +170,21 @@ def is_namz(data: bytes) -> bool:
 def pack(nam_json: Union[bytes, bytearray, str], options: Optional[PackOptions] = None) -> bytes:
     """Parse NAM JSON (``.nam``) bytes → packed ``.namz`` bytes.
 
-    Returns ``b""`` on failure (not valid JSON). Lossless w.r.t. the float32 engine.
+    Returns ``b""`` on failure (not valid JSON or not UTF-8, nested deeper than :data:`MAX_DEPTH`, a
+    ``"weights"`` member holding an integer literal, a weight whose float32 is not finite). Lossless w.r.t.
+    the float32 engine.
     """
     opts = options or PackOptions()
     try:
         return _pack(nam_json, opts)
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError, OverflowError, RecursionError):
         # Mirrors the reference `catch (...) { return {}; }`: any malformed input (bad JSON, a non-finite
-        # or out-of-float32-range weight, an oversized integer) is a clean failure, never a raise.
+        # or out-of-float32-range weight, a number past every double) is a clean failure, never a raise.
         return b""
 
 
 def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
-    j = json.loads(nam_json, parse_constant=_reject_nonfinite)
+    j = _json.loads(nam_json if isinstance(nam_json, str) else _json.text_of(nam_json))
 
     header_bytes = b""
     if opts.metadata:
@@ -220,19 +199,18 @@ def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
             tv = _type_value(v)
             j["metadata"][k] = tv
             header[k] = tv
-        header_bytes = json.dumps(header, **_JSON_KW).encode("utf-8")
+        header_bytes = _json.dumps(header).encode("utf-8")
         if len(header_bytes) > 0xFFFF:  # u16 length field; display metadata is tiny — never hit
             header_bytes = b""
 
     arrays: List[np.ndarray] = []
     _extract_weights(j, arrays)
-    # Non-finite weights (NaN/±Inf, or a decimal that overflows float32) are out of contract; reject them
-    # rather than emit a blob that can't round-trip through standard JSON.
+    # A weight past the float32 range (1e39 is a finite JSON number) would be stored as an infinity, which no
+    # reader takes: refused, as the reference refuses it.
     for a in arrays:
         if a.size and not np.isfinite(a).all():
             return b""
-    j = _coerce_oversized_ints(j)  # weights are already extracted → only tiny config ints are walked
-    skeleton = json.dumps(j, **_JSON_KW).encode("utf-8")
+    skeleton = _json.dumps(j).encode("utf-8")
 
     total_floats = int(sum(a.size for a in arrays))
 
@@ -263,8 +241,9 @@ def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
 def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON_BYTES) -> bytes:
     """Inverse of :func:`pack`: ``.namz`` bytes → reconstructed ``.nam`` JSON bytes.
 
-    Returns ``b""`` on any failure — not a ``.namz``, unknown codec/dtype, truncation, corruption, or an
-    output over ``max_json_bytes``. Never raises on malformed input.
+    Returns ``b""`` on any failure — not a ``.namz``, unknown version/codec/dtype, truncation, corruption, a
+    payload float that is NaN or infinite, or an output over ``max_json_bytes``. Never raises on malformed
+    input.
     """
     data = bytes(data)
     n = len(data)
@@ -272,7 +251,7 @@ def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON
         return b""
 
     fmt, codec, dtype, flags = data[4], data[5], data[6], data[7]
-    if fmt > FORMAT_VERSION or codec != _CODEC_STORE or dtype != _DTYPE_F32:
+    if fmt < 1 or fmt > FORMAT_VERSION or codec != _CODEC_STORE or dtype != _DTYPE_F32:  # 1 and 2 only
         return b""
 
     off = 8
@@ -331,6 +310,8 @@ def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON
                 flat = np.frombuffer(payload, dtype="<f4")
         else:
             flat = np.empty(0, dtype="<f4")
+        if not np.isfinite(flat).all():  # every payload float, named by a placeholder or not
+            return b""
 
         segs: List[np.ndarray] = []
         o = 0
@@ -338,23 +319,24 @@ def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON
             segs.append(flat[o : o + ln])
             o += ln
 
-        j = json.loads(skeleton)
-        j = _coerce_oversized_ints(j)  # coerce BEFORE refill, while the tree is still weight-free
+        j = _json.loads(_json.text_of(skeleton))
         if not _refill_weights(j, segs):
             return b""
-        rebuilt = json.dumps(j, **_JSON_KW).encode("utf-8")
+        rebuilt = _json.dumps(j).encode("utf-8")
         if len(rebuilt) > max_json_bytes:
             return b""
         return rebuilt
-    except (ValueError, struct.error, IndexError):
+    except (ValueError, OverflowError, struct.error, IndexError, RecursionError):
         return b""
 
 
 def read_meta(data: bytes) -> Dict[str, str]:
     """Read the display-metadata block WITHOUT touching the weights.
 
-    Empty for a v1 ``.namz``, a non-``.namz`` buffer, or one packed without metadata. Values are strings
-    (bool → ``"true"``/``"false"``, number → its digits), mirroring the reference ``readMeta``.
+    Empty for a v1 ``.namz``, a non-``.namz`` buffer, or one packed without metadata, and for a block the
+    reference cannot read. Values are strings (bool → ``"true"``/``"false"``, integer → its digits, other
+    number → ``"%f"``, array or object → its JSON as the reference prints it), mirroring the reference
+    ``readMeta``.
     """
     data = bytes(data)
     out: Dict[str, str] = {}
@@ -366,8 +348,8 @@ def read_meta(data: bytes) -> Dict[str, str]:
     if meta_len == 0 or 10 + meta_len > len(data):
         return out
     try:
-        j = json.loads(data[10 : 10 + meta_len])
-    except ValueError:
+        j = _json.loads(_json.text_of(data[10 : 10 + meta_len]))
+    except (ValueError, RecursionError):
         return out
     if isinstance(j, dict):
         for k, v in j.items():
@@ -380,5 +362,5 @@ def read_meta(data: bytes) -> Dict[str, str]:
             elif isinstance(v, float):
                 out[k] = "%f" % v  # matches the reference std::to_string(double) (6 decimals)
             else:
-                out[k] = json.dumps(v, ensure_ascii=False)
+                out[k] = _json.dumps(v)
     return out

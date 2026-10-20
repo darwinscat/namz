@@ -142,9 +142,10 @@ old readers.
 
 The format is a **cross-language contract**, not just one binary. Native ports live in this repo and are
 **byte-for-byte identical** to this C++ reference — each is validated against the shared
-[conformance vectors](conformance/) (the cross-language TCK: golden encode pairs + must-reject blobs) plus
-a differential fuzz against the reference, so `encode` reproduces the exact same `.namz` and `decode` is
-bit-exact float32 everywhere.
+[conformance vectors](conformance/) (the cross-language TCK: golden encode pairs, must-reject blobs,
+decode-only blobs with the exact `.nam` each decodes to, and `.nam` inputs encode must refuse) plus a
+differential fuzz against the reference, so `encode` reproduces the exact same `.namz`, `decode` is
+bit-exact float32 and prints the reference's own bytes everywhere.
 
 | language | package | registry | source |
 |---|---|---|---|

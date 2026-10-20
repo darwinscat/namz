@@ -16,6 +16,7 @@ strings that the NAM engine loads as float32 anyway. ``.namz`` stores each weigh
 from ._codec import (
     DEFAULT_MAX_JSON_BYTES,
     FORMAT_VERSION,
+    MAX_DEPTH,
     PackOptions,
     is_namz,
     pack,
@@ -23,7 +24,7 @@ from ._codec import (
     unpack,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "pack",
@@ -33,5 +34,6 @@ __all__ = [
     "PackOptions",
     "FORMAT_VERSION",
     "DEFAULT_MAX_JSON_BYTES",
+    "MAX_DEPTH",
     "__version__",
 ]
