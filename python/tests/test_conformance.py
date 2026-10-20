@@ -3,11 +3,12 @@
 
 For each ``manifest["valid"]`` entry:
   1. encode(input, options) must **byte-match** the golden ``.namz``;
-  2. decode(golden) must reproduce the weights **bit-exact** (float32);
+  2. decode(golden) must reproduce the weights **bit-exact** (float32) — for ``"dtype": 1``, the half nearest
+     each input float32 (numpy.float16, ties to even), widened;
   3. decode → encode must reproduce the golden (idempotence).
 For each ``manifest["invalid"]`` entry: decode must be **rejected** (empty), never crash.
 For each ``manifest["decodeOnly"]`` entry: decode must **byte-match** the reference's ``.nam``.
-For each ``manifest["invalidNam"]`` entry: encode must be **refused** (empty).
+For each ``manifest["invalidNam"]`` entry: encode with its ``dtype`` must be **refused** (empty).
 """
 
 from __future__ import annotations
@@ -58,8 +59,9 @@ def test_valid_vectors(manifest, conformance_dir):
         name = case["name"]
         src = _read(os.path.join(conformance_dir, case["input"]))
         expected = _read(os.path.join(conformance_dir, case["output"]))
+        assert case["dtype"] in (namz.DTYPE_F32, namz.DTYPE_F16), f"[{name}] no dtype stated"
         opts = namz.PackOptions(
-            shuffle=case.get("shuffle", True), metadata=dict(case.get("set", {}))
+            shuffle=case.get("shuffle", True), metadata=dict(case.get("set", {})), dtype=case["dtype"]
         )
 
         # 1. encode must byte-match the golden
@@ -77,6 +79,8 @@ def test_valid_vectors(manifest, conformance_dir):
         _gather_weights(json.loads(decoded), got_w)
         assert len(want_w) == len(got_w), f"[{name}] weight-array count differs"
         for a, b in zip(want_w, got_w):
+            if case["dtype"] == namz.DTYPE_F16:  # numpy's own rounding, independent of the port's bit code
+                a = a.astype(np.float16).astype(np.float32)
             assert a.tobytes() == b.astype(np.float32).tobytes(), (
                 f"[{name}] weights not bit-exact"
             )
@@ -114,6 +118,7 @@ def test_invalid_nam_refused(manifest, conformance_dir):
     packed = []
     for case in manifest.get("invalidNam", []):
         src = _read(os.path.join(conformance_dir, case["file"]))
-        if namz.pack(src) != b"":
+        assert case["dtype"] in (namz.DTYPE_F32, namz.DTYPE_F16), f"[{case['name']}] no dtype stated"
+        if namz.pack(src, namz.PackOptions(dtype=case["dtype"])) != b"":
             packed.append(f"[{case['name']}] {case['why']}")
     assert not packed, "should have been refused:\n" + "\n".join(packed)

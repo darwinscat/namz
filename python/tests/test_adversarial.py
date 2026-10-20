@@ -79,7 +79,9 @@ def test_header_critical_bytes_reject_when_corrupted():
     # explicit reserved values
     assert namz.unpack(FULL[:4] + bytes([9]) + FULL[5:]) == b"", "version 9 accepted"
     assert namz.unpack(FULL[:5] + bytes([1]) + FULL[6:]) == b"", "codec 1 (deflate) accepted"
-    assert namz.unpack(FULL[:6] + bytes([1]) + FULL[7:]) == b"", "dtype 1 (float16) accepted"
+    # dtype 1 is float16: a float32 payload is twice the halves its lengths ask, so the length rule refuses it
+    assert namz.unpack(FULL[:6] + bytes([1]) + FULL[7:]) == b"", "dtype 1 on a float32 payload accepted"
+    assert namz.unpack(FULL[:6] + bytes([2]) + FULL[7:]) == b"", "dtype 2 accepted"
 
 
 def test_single_byte_flips_are_self_consistent():

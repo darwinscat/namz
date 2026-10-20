@@ -4,25 +4,29 @@
 Usage::
 
     namz encode <in.nam> <out.namz> [--no-shuffle] [--set key=value ...]
-    namz decode <in.namz> <out.nam>
-    namz map    <in.namz> [--json]     print the metadata header (no weight decode)
-    namz verify <in.nam>               pack->unpack round-trip check + ratio
+    namz encode <in.nam> <out.nam16z> --f16 [--no-shuffle] [--set key=value ...]   float16, LOSSY
+    namz decode <in.namz|in.nam16z> <out.nam>
+    namz map    <in.namz|in.nam16z> [--json]   print the metadata header (no weight decode)
+    namz verify <in.nam> [--f16]       pack->unpack round-trip check + ratio
 """
 
 from __future__ import annotations
 
 import sys
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from ._codec import DEFAULT_MAX_JSON_BYTES, PackOptions, is_namz, pack, read_meta, unpack
+from . import _json
+from ._codec import DEFAULT_MAX_JSON_BYTES, DTYPE_F16, PackOptions, is_namz, pack, read_meta, unpack
 
 _USAGE = """namz — lossless .nam <-> .namz codec
 
 Usage:
   namz encode <in.nam> <out.namz> [--no-shuffle] [--set key=value ...]
-  namz decode <in.namz> <out.nam>
-  namz map    <in.namz> [--json]        print the metadata header (no weight decode)
-  namz verify <in.nam>                  pack->unpack round-trip check + ratio
+  namz encode <in.nam> <out.nam16z> --f16 [--no-shuffle] [--set key=value ...]
+                                        float16 weights: half the size, LOSSY
+  namz decode <in.namz|in.nam16z> <out.nam>
+  namz map    <in.namz|in.nam16z> [--json]   print the metadata header (no weight decode)
+  namz verify <in.nam> [--f16]          pack->unpack round-trip check + ratio
 """
 
 
@@ -52,6 +56,29 @@ def _pct(numer: int, denom: int) -> float:
     return 0.0 if denom == 0 else 100.0 * numer / denom
 
 
+def _named_f16(path: str) -> bool:
+    """True if ``path`` ends in ``.nam16z``, ASCII case ignored — the name a float16 file goes by."""
+    tail = path[-7:]
+    return len(path) >= 7 and "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in tail) == ".nam16z"
+
+
+def _weights_of(node: Any, out: List[List[float]]) -> List[List[float]]:
+    """Every numeric ``"weights"`` array of a parsed ``.nam``, in pack's order (sorted keys, depth first)."""
+    if isinstance(node, dict):
+        for key in sorted(node.keys()):
+            val = node[key]
+            if key == "weights" and isinstance(val, list) and all(
+                isinstance(x, (int, float)) and not isinstance(x, bool) for x in val
+            ):
+                out.append([float(x) for x in val])
+            else:
+                _weights_of(val, out)
+    elif isinstance(node, list):
+        for item in node:
+            _weights_of(item, out)
+    return out
+
+
 def _do_encode(argv: List[str]) -> int:
     if len(argv) < 4:
         return _usage()
@@ -62,6 +89,8 @@ def _do_encode(argv: List[str]) -> int:
         a = argv[i]
         if a == "--no-shuffle":
             opts.shuffle = False
+        elif a == "--f16":
+            opts.dtype = DTYPE_F16
         elif a == "--set" and i + 1 < len(argv):
             i += 1
             kv = argv[i]
@@ -75,13 +104,26 @@ def _do_encode(argv: List[str]) -> int:
             return _usage()
         i += 1
 
+    # float16 is lossy, so it is asked for by the flag, and the name says it: --f16 writes only a .nam16z, and
+    # a .nam16z is only ever written with --f16. The name never picks the dtype by itself.
+    f16 = opts.dtype == DTYPE_F16
+    if f16 != _named_f16(out_path):
+        if f16:
+            sys.stderr.write("--f16 writes lossy float16 weights: name the output .nam16z, not %s\n" % out_path)
+        else:
+            sys.stderr.write("%s is named .nam16z: pass --f16 to write float16 weights (lossy)\n" % out_path)
+        return 2
     src = _read(src_path)
     if src is None:
         sys.stderr.write("cannot read %s\n" % src_path)
         return 1
     packed = pack(src, opts)
     if not packed:
-        sys.stderr.write("encode failed (not valid NAM JSON?): %s\n" % src_path)
+        if f16:
+            sys.stderr.write("encode failed (not valid NAM JSON, or a weight past float16's range: "
+                             "|w| >= 65520, rounds past 65504?): %s\n" % src_path)
+        else:
+            sys.stderr.write("encode failed (not valid NAM JSON?): %s\n" % src_path)
         return 1
     if not _write(out_path, packed):
         sys.stderr.write("cannot write %s\n" % out_path)
@@ -136,6 +178,8 @@ def _do_map(argv: List[str]) -> int:
             sys.stdout.write("  %s = %s\n" % (k, m[k]))
         if not m:
             sys.stderr.write("(no metadata header — v1 .namz or packed without --set)\n")
+        if len(src) > 6 and src[6] == DTYPE_F16:
+            sys.stderr.write("(float16 weights — lossy)\n")
     return 0
 
 
@@ -143,11 +187,18 @@ def _do_verify(argv: List[str]) -> int:
     if len(argv) < 3:
         return _usage()
     src_path = argv[2]
+    opts = PackOptions()
+    for a in argv[3:]:
+        if a == "--f16":
+            opts.dtype = DTYPE_F16
+        else:
+            sys.stderr.write("unknown option: %s\n" % a)
+            return _usage()
     src = _read(src_path)
     if src is None:
         sys.stderr.write("cannot read %s\n" % src_path)
         return 1
-    packed = pack(src)
+    packed = pack(src, opts)
     if not packed:
         sys.stderr.write("FAIL pack: %s\n" % src_path)
         return 1
@@ -155,8 +206,35 @@ def _do_verify(argv: List[str]) -> int:
     if not back:
         sys.stderr.write("FAIL unpack: %s\n" % src_path)
         return 1
-    packed2 = pack(back)
+    packed2 = pack(back, opts)
     idempotent = packed == packed2
+    if opts.dtype == DTYPE_F16:
+        # What float16 cost: the largest change of any weight against the float32 pack, in absolute terms.
+        p32 = pack(src)
+        u32 = unpack(p32, DEFAULT_MAX_JSON_BYTES) if p32 else b""
+        w32 = _weights_of(_json.loads(_json.text_of(u32)), []) if u32 else None
+        w16 = _weights_of(_json.loads(_json.text_of(back)), [])
+        if w32 is None or len(w32) != len(w16):
+            sys.stderr.write("FAIL decode: %s\n" % src_path)
+            return 1
+        worst = 0.0
+        for s32, s16 in zip(w32, w16):
+            for a32, a16 in zip(s32, s16):
+                worst = max(worst, abs(a16 - a32))
+        sys.stderr.write(
+            "%s: %s  raw=%d namz=%d nam16z=%d (%.1f%%)  idempotent=%s  max|w16-w32|=%.3g\n"
+            % (
+                src_path,
+                "OK" if idempotent else "MISMATCH",
+                len(src),
+                len(p32),
+                len(packed),
+                _pct(len(packed), len(src)),
+                "yes" if idempotent else "no",
+                worst,
+            )
+        )
+        return 0 if idempotent else 1
     sys.stderr.write(
         "%s: %s  raw=%d namz=%d (%.1f%%)  idempotent=%s\n"
         % (
