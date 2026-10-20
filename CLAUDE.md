@@ -3,7 +3,9 @@
 **namz** is a lossless codec for NeuralAmpModeler `.nam` files: a single C++17 header (`include/namz.h`) +
 a CLI (`cli/namz.cpp`) + a wire-format spec (`NAMZ-FORMAT.md`). It stores NAM weights as float32 instead of
 decimal text (~5.5× smaller, bit-exact, deterministic); since 4.4.0, on explicit request only, as float16
-(dtype 1, conventionally `.nam16z`: about half again, and LOSSY — "bit-exact" is float32's). Extracted
+(dtype 1, conventionally `.nam16z`: about half again, and LOSSY — "bit-exact" is float32's). The js and
+python ports read and write float16 too, from 1.3.0 (`dtype: DTYPE_F16` / `PackOptions(dtype=DTYPE_F16)`,
+their CLIs' `--f16`), byte-identical to the reference; the conformance vectors pin it. Extracted
 from the OrbitCab plugin; its output is byte-identical to OrbitCab's embedded `.namz`.
 
 ## 👉 If your task is porting namz to other languages
@@ -25,8 +27,8 @@ with Python, end-to-end, then review before the next language.
 ## Layout
 - `include/namz.h` — the codec (header-only, stb-style; define `NAMZ_IMPLEMENTATION` in one TU).
 - `cli/namz.cpp` — `encode` / `decode` / `map` / `verify`.
-- `NAMZ-FORMAT.md` — the wire format (dtype 0 float32, dtype 1 float16 since 4.4.0; reserved codec bytes
-  for growth).
+- `NAMZ-FORMAT.md` — the wire format (dtype 0 float32, dtype 1 float16 since 4.4.0 — the ports since 1.3.0;
+  reserved codec bytes for growth).
 - `conformance/` — the cross-language TCK (golden pairs + invalid blobs + `manifest.json`).
 - `tests/` — `roundtrip.cpp`, the maniacal `adversarial.cpp`, and `conformance.cpp` (the vector runner).
 - `.github/workflows/ci.yml` — build + test on Linux / macOS / Windows.

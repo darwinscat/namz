@@ -1,27 +1,30 @@
 {
   "format": "namz",
-  "note": "Cross-language conformance vectors. Encode a valid input with the given options and it must BYTE-MATCH the .namz; decode the .namz and the weights must be bit-exact float32. Every invalid .namz must be rejected (empty/error, never crash). Decode each decodeOnly .namz and it must BYTE-MATCH its .nam. Encode each invalidNam .nam and it must be refused.",
+  "note": "Cross-language conformance vectors. Encode a valid input with the given options (shuffle, set, dtype: 0 float32, 1 float16) and it must BYTE-MATCH the output; decode the output and the weights must be bit-exact float32 \u2014 for dtype 1, the half nearest each input float32 (ties to even), widened. Every invalid .namz must be rejected (empty/error, never crash). Decode each decodeOnly .namz and it must BYTE-MATCH its .nam. Encode each invalidNam .nam with its dtype and it must be refused.",
   "valid": [
     {
       "name": "flat",
       "input": "vectors/flat.nam",
       "output": "vectors/flat.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "flat-noshuffle",
       "input": "vectors/flat-noshuffle.nam",
       "output": "vectors/flat-noshuffle.namz",
       "shuffle": false,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "nested",
       "input": "vectors/nested.nam",
       "output": "vectors/nested.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "metadata",
@@ -33,63 +36,123 @@
         "boost": "true",
         "device": "tube:1,pnp:1",
         "gear_make": "Two Notes"
-      }
+      },
+      "dtype": 0
     },
     {
       "name": "no-weights",
       "input": "vectors/no-weights.nam",
       "output": "vectors/no-weights.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "empty-weights",
       "input": "vectors/empty-weights.nam",
       "output": "vectors/empty-weights.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "edge-floats",
       "input": "vectors/edge-floats.nam",
       "output": "vectors/edge-floats.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "integer-weights",
       "input": "vectors/integer-weights.nam",
       "output": "vectors/integer-weights.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "degenerate-array",
       "input": "vectors/degenerate-array.nam",
       "output": "vectors/degenerate-array.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "depth-128",
       "input": "vectors/depth-128.nam",
       "output": "vectors/depth-128.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "weights-not-placeholders",
       "input": "vectors/weights-not-placeholders.nam",
       "output": "vectors/weights-not-placeholders.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
     },
     {
       "name": "skeleton-doubles",
       "input": "vectors/skeleton-doubles.nam",
       "output": "vectors/skeleton-doubles.namz",
       "shuffle": true,
-      "set": {}
+      "set": {},
+      "dtype": 0
+    },
+    {
+      "name": "f16-flat",
+      "input": "vectors/f16-flat.nam",
+      "output": "vectors/f16-flat.nam16z",
+      "shuffle": true,
+      "set": {},
+      "dtype": 1
+    },
+    {
+      "name": "f16-flat-noshuffle",
+      "input": "vectors/f16-flat-noshuffle.nam",
+      "output": "vectors/f16-flat-noshuffle.nam16z",
+      "shuffle": false,
+      "set": {},
+      "dtype": 1
+    },
+    {
+      "name": "f16-nested",
+      "input": "vectors/f16-nested.nam",
+      "output": "vectors/f16-nested.nam16z",
+      "shuffle": true,
+      "set": {
+        "tone_type": "clean",
+        "gear_make": "Two Notes"
+      },
+      "dtype": 1
+    },
+    {
+      "name": "f16-subnormals",
+      "input": "vectors/f16-subnormals.nam",
+      "output": "vectors/f16-subnormals.nam16z",
+      "shuffle": true,
+      "set": {},
+      "dtype": 1
+    },
+    {
+      "name": "f16-edges",
+      "input": "vectors/f16-edges.nam",
+      "output": "vectors/f16-edges.nam16z",
+      "shuffle": false,
+      "set": {},
+      "dtype": 1
+    },
+    {
+      "name": "f16-empty-weights",
+      "input": "vectors/f16-empty-weights.nam",
+      "output": "vectors/f16-empty-weights.nam16z",
+      "shuffle": true,
+      "set": {},
+      "dtype": 1
     }
   ],
   "invalid": [
@@ -111,7 +174,7 @@
     {
       "name": "bad-dtype",
       "file": "invalid/bad-dtype.namz",
-      "why": "dtype 1 (float16, reserved) must be refused"
+      "why": "dtype 1 (float16) on a float32 file: as halves its 12-byte payload is twice the 3 weights its lengths ask, so the length rule refuses it (dtype 2 and up are unknown: bad-dtype-2)"
     },
     {
       "name": "truncated",
@@ -217,6 +280,41 @@
       "name": "payload-nan",
       "file": "invalid/payload-nan.namz",
       "why": "a payload float that is NaN, in a segment no placeholder names: the rule is the payload's"
+    },
+    {
+      "name": "bad-dtype-2",
+      "file": "invalid/bad-dtype-2.namz",
+      "why": "dtype 2: no such dtype \u2014 the payload would fit its lengths as halves, so only the dtype refuses it"
+    },
+    {
+      "name": "f16-as-float32",
+      "file": "invalid/f16-as-float32.namz",
+      "why": "a float16 file with dtype 0: as float32 its 16-byte payload holds 4 of the 8 weights its lengths ask"
+    },
+    {
+      "name": "f16-truncated",
+      "file": "invalid/f16-truncated.namz",
+      "why": "a float16 payload one byte short: an odd length is no whole number of halves"
+    },
+    {
+      "name": "f16-trailing-half",
+      "file": "invalid/f16-trailing-half.namz",
+      "why": "one half more than the lengths ask: a float16 payload is exactly sum(lengths) * 2 bytes"
+    },
+    {
+      "name": "f16-short-lengths",
+      "file": "invalid/f16-short-lengths.namz",
+      "why": "lengths {1} over a payload of 3 halves: the lengths must sum to the payload"
+    },
+    {
+      "name": "f16-payload-inf",
+      "file": "invalid/f16-payload-inf.namz",
+      "why": "a payload half that is -infinity: every half is finite"
+    },
+    {
+      "name": "f16-payload-nan",
+      "file": "invalid/f16-payload-nan.namz",
+      "why": "a payload half that is NaN (0x7C01), in a segment no placeholder names: the rule is the payload's"
     }
   ],
   "decodeOnly": [
@@ -261,48 +359,92 @@
       "file": "decode-only/float-digits.namz",
       "output": "decode-only/float-digits.nam",
       "why": "float32 payload values printed with the reference's own digits"
+    },
+    {
+      "name": "f16-widen",
+      "file": "decode-only/f16-widen.namz",
+      "output": "decode-only/f16-widen.nam",
+      "why": "float16 halves (2 byte planes) widen to the float32 of the same value, printed with the reference's digits: signed zeros, subnormals, the smallest normals, 65504; two segments, so the planes run across the whole payload"
+    },
+    {
+      "name": "f16-widen-noshuffle",
+      "file": "decode-only/f16-widen-noshuffle.namz",
+      "output": "decode-only/f16-widen-noshuffle.nam",
+      "why": "float16 halves (low byte first) widen to the float32 of the same value, printed with the reference's digits: signed zeros, subnormals, the smallest normals, 65504; two segments, so the planes run across the whole payload"
+    },
+    {
+      "name": "f16-version-1",
+      "file": "decode-only/f16-version-1.namz",
+      "output": "decode-only/f16-version-1.nam",
+      "why": "formatVersion 1 with dtype 1: no metadata length, float16 payload"
     }
   ],
   "invalidNam": [
     {
       "name": "weights-integer",
       "file": "invalid/weights-integer.nam",
-      "why": "an integer \"weights\" would be stored as a placeholder naming a segment that does not exist"
+      "why": "an integer \"weights\" would be stored as a placeholder naming a segment that does not exist",
+      "dtype": 0
     },
     {
       "name": "weights-integer-nested",
       "file": "invalid/weights-integer-nested.nam",
-      "why": "config.weights 0 would read back as the top-level weights array"
+      "why": "config.weights 0 would read back as the top-level weights array",
+      "dtype": 0
     },
     {
       "name": "weights-minus-zero",
       "file": "invalid/weights-minus-zero.nam",
-      "why": "-0 is an integer literal, so it would be stored as a placeholder"
+      "why": "-0 is an integer literal, so it would be stored as a placeholder",
+      "dtype": 0
     },
     {
       "name": "depth-129",
       "file": "invalid/depth-129.nam",
-      "why": "129 deep: pack refuses what no reader would read back"
+      "why": "129 deep: pack refuses what no reader would read back",
+      "dtype": 0
     },
     {
       "name": "depth-129-duplicate-key",
       "file": "invalid/depth-129-duplicate-key.nam",
-      "why": "129 deep as written: depth counts the text, so a member a later duplicate key replaces still counts"
+      "why": "129 deep as written: depth counts the text, so a member a later duplicate key replaces still counts",
+      "dtype": 0
     },
     {
       "name": "utf16",
       "file": "invalid/utf16.nam",
-      "why": "a .nam in UTF-16: JSON text is UTF-8"
+      "why": "a .nam in UTF-16: JSON text is UTF-8",
+      "dtype": 0
     },
     {
       "name": "lone-surrogate",
       "file": "invalid/lone-surrogate.nam",
-      "why": "an escaped lone surrogate: no Unicode text, so not a JSON string"
+      "why": "an escaped lone surrogate: no Unicode text, so not a JSON string",
+      "dtype": 0
     },
     {
       "name": "weights-float32-overflow",
       "file": "invalid/weights-float32-overflow.nam",
-      "why": "1e39 is a finite JSON number past the float32 range: the payload never stores an infinity"
+      "why": "1e39 is a finite JSON number past the float32 range: the payload never stores an infinity",
+      "dtype": 0
+    },
+    {
+      "name": "f16-overflow-tie",
+      "file": "invalid/f16-overflow-tie.nam",
+      "why": "65520 is the tie above the largest half 65504 and rounds to the even infinity: no half holds it",
+      "dtype": 1
+    },
+    {
+      "name": "f16-overflow-flt-max",
+      "file": "invalid/f16-overflow-flt-max.nam",
+      "why": "-FLT_MAX: a finite float32 past every half",
+      "dtype": 1
+    },
+    {
+      "name": "f16-overflow-nested",
+      "file": "invalid/f16-overflow-nested.nam",
+      "why": "one weight past half's range in a submodel: pack refuses the whole .nam",
+      "dtype": 1
     }
   ]
 }

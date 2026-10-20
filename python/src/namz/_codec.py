@@ -4,11 +4,14 @@
 #
 # This is a native Python port of the C++ reference (`include/namz.h`). It is byte-for-byte compatible:
 # `pack()` reproduces the reference `.namz` exactly, and `unpack()` rehydrates weights bit-exact (float32).
+# On request (`PackOptions.dtype = DTYPE_F16`) `pack()` stores each weight as an IEEE half instead — LOSSY,
+# half the payload, a `.nam16z` by convention; `unpack()` reads either dtype by the file's dtype byte.
 # See NAMZ-FORMAT.md for the wire format and conformance/ for the cross-language vectors this must satisfy.
 """Core codec: :func:`pack`, :func:`unpack`, :func:`read_meta`, :func:`is_namz`."""
 
 from __future__ import annotations
 
+import operator
 import struct
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
@@ -24,6 +27,8 @@ __all__ = [
     "read_meta",
     "is_namz",
     "PackOptions",
+    "DTYPE_F32",
+    "DTYPE_F16",
     "FORMAT_VERSION",
     "DEFAULT_MAX_JSON_BYTES",
     "MAX_DEPTH",
@@ -34,8 +39,11 @@ MAGIC = b"NAMZ"
 FORMAT_VERSION = 2  # readers accept 1 (no meta block) and 2, nothing else
 
 _CODEC_STORE = 0  # 1 = deflate, 2 = zstd (reserved)
-_DTYPE_F32 = 0  # 1 = float16 (reserved, lossy)
-_FLAG_SHUFFLE = 1 << 0  # payload bytes split into 4 planes (lossless)
+#: dtype 0: each weight a float32 — lossless to the engine, and the default.
+DTYPE_F32 = 0
+#: dtype 1: each weight the IEEE-754 half nearest its float32 — LOSSY, written only when asked for.
+DTYPE_F16 = 1
+_FLAG_SHUFFLE = 1 << 0  # payload bytes split into byte planes, one per byte of a weight (lossless)
 
 _INT64_MAX = (1 << 63) - 1
 
@@ -59,13 +67,77 @@ class PackOptions:
         Display fields to set/overwrite in the top-level ``metadata`` object and mirror into the readable
         header block. Values are typed on the way in: ``"true"``/``"false"`` → bool, all-ASCII-digits →
         int, else string — exactly like the reference. Empty ⇒ metadata untouched, no header block.
+    dtype:
+        What the payload stores. :data:`DTYPE_F32`, the default, is lossless to the engine's float32.
+        :data:`DTYPE_F16` is **lossy** and half the payload: each weight's float32 rounded to the nearest
+        IEEE-754 half, ties to even, subnormals kept. A weight past half's range (|w| >= 65520; up to there it
+        rounds to 65504 at most) refuses the whole pack. Name such a file ``.nam16z``.
     """
 
     shuffle: bool = True
     metadata: Dict[str, str] = field(default_factory=dict)
+    dtype: int = DTYPE_F32
 
 
 # -- helpers ---------------------------------------------------------------------------------------
+def _dtype_of(dtype: Any) -> int:
+    """``dtype`` as an int — a Python or numpy integer (``operator.index``) — or -1 if it is none: a bool, a
+    float, a string or ``None`` is no dtype."""
+    if isinstance(dtype, (bool, np.bool_)):
+        return -1
+    try:
+        return operator.index(dtype)
+    except TypeError:
+        return -1
+
+
+def _bytes_per_weight(dtype: int) -> int:
+    """4 for float32, 2 for float16, 0 for a dtype namz does not define."""
+    return 4 if dtype == DTYPE_F32 else 2 if dtype == DTYPE_F16 else 0
+
+
+def _halves_of(flat: np.ndarray) -> Optional[np.ndarray]:
+    """The IEEE-754 binary16 nearest each finite float32 of ``flat``, ties to even — on the bits, as the
+    reference's ``halfOf``, so no floating-point mode or hardware half support can move it. ``None`` if any
+    is not finite or its half overflows (|f| >= 65520, the tie above 65504 rounding to the even infinity). A
+    half subnormal is kept; below the smallest one's midpoint (2^-25, a tie that goes to even) is a zero of
+    the float's sign."""
+    x = flat.astype("<f4", copy=False).view("<u4").astype(np.int64)
+    sign = (x >> 16) & 0x8000
+    a = x & 0x7FFFFFFF
+    if (a >= 0x7F800000).any():  # NaN or infinity
+        return None
+    normal = a >= 0x38800000  # >= 2^-14: a normal half, or past half's range
+    h = (((a >> 23) - 112) << 10) | ((a >> 13) & 0x3FF)  # 127 - 15 = 112
+    rest = a & 0x1FFF  # the 13 mantissa bits half has no room for
+    h = h + ((rest > 0x1000) | ((rest == 0x1000) & ((h & 1) != 0)))  # a carry steps the exponent, as it should
+    if (normal & (h >= 0x7C00)).any():  # rounded up to (or past) infinity
+        return None
+    # [2^-25, 2^-14): a half subnormal in units of 2^-24 — the float32 significand >> (126 - its exponent)
+    sub = ~normal & (a >= 0x33000000)
+    shift = np.clip(126 - (a >> 23), 14, 24)
+    significand = (a & 0x7FFFFF) | 0x800000
+    hs = significand >> shift
+    rest_s = significand & ((np.int64(1) << shift) - 1)
+    mid = np.int64(1) << (shift - 1)
+    hs = hs + ((rest_s > mid) | ((rest_s == mid) & ((hs & 1) != 0)))  # 0x400, the smallest normal, is right too
+    return (np.where(normal, h, np.where(sub, hs, 0)) | sign).astype("<u2")
+
+
+def _widen_halves(halves: np.ndarray) -> np.ndarray:
+    """The float32 of each half's value — exact, every half has one; a half infinity or NaN widens to the
+    float32 infinity or NaN. On the bits, as the reference's ``floatOfHalf``: a subnormal m * 2^-24 is a
+    float32 product of two exact numbers whose result is a normal float32, so nothing rounds."""
+    h = halves.astype(np.uint32)
+    sign = (h & 0x8000) << 16
+    e = (h >> 10) & 0x1F
+    m = h & 0x3FF
+    small = (m.astype(np.float32) * np.float32(2.0 ** -24)).view(np.uint32)  # e == 0: zero or subnormal
+    bits = np.where(e == 0x1F, 0x7F800000 | (m << 13), ((e + 112) << 23) | (m << 13))
+    bits = np.where(e == 0, small, bits) | sign
+    return bits.astype("<u4").view("<f4")  # little-endian bits under a little-endian view, whatever the host
+
+
 def _type_value(s: str) -> Union[bool, int, str]:
     """Type a metadata string the way the reference ``typeValue`` does."""
     if s == "true":
@@ -150,8 +222,9 @@ def _refill_weights(node: Any, segs: List[np.ndarray]) -> bool:
 
 
 def _shuffle(flat: np.ndarray) -> bytes:
-    """AoS float32 bytes → 4 SoA byte-planes (reversible). ``flat`` is little-endian float32."""
-    b = flat.view(np.uint8).reshape(-1, 4)  # (N, 4)
+    """AoS float32 bytes → 4 SoA byte-planes (reversible). ``flat`` is float32, made little-endian here:
+    ``np.concatenate`` hands back the host's byte order whatever its inputs had."""
+    b = flat.astype("<f4", copy=False).view(np.uint8).reshape(-1, 4)  # (N, 4)
     return np.ascontiguousarray(b.T).tobytes()  # (4, N) row-major → plane0…plane3
 
 
@@ -171,8 +244,9 @@ def pack(nam_json: Union[bytes, bytearray, str], options: Optional[PackOptions] 
     """Parse NAM JSON (``.nam``) bytes → packed ``.namz`` bytes.
 
     Returns ``b""`` on failure (not valid JSON or not UTF-8, nested deeper than :data:`MAX_DEPTH`, a
-    ``"weights"`` member holding an integer literal, a weight whose float32 is not finite). Lossless w.r.t.
-    the float32 engine.
+    ``"weights"`` member holding an integer literal, a weight whose float32 is not finite, a dtype other than
+    :data:`DTYPE_F32` and :data:`DTYPE_F16`, with :data:`DTYPE_F16` a weight past half's range). Lossless
+    w.r.t. the float32 engine with :data:`DTYPE_F32`; :data:`DTYPE_F16` is lossy by design.
     """
     opts = options or PackOptions()
     try:
@@ -212,7 +286,18 @@ def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
             return b""
     skeleton = _json.dumps(j).encode("utf-8")
 
+    dtype = _dtype_of(opts.dtype)
+    if _bytes_per_weight(dtype) == 0:
+        return b""
+
     total_floats = int(sum(a.size for a in arrays))
+
+    halves: Optional[np.ndarray] = None  # DTYPE_F16 only: every weight's half, in payload order
+    if dtype == DTYPE_F16:
+        flat16 = np.concatenate(arrays) if arrays else np.empty(0, dtype=np.float32)
+        halves = _halves_of(flat16)
+        if halves is None:
+            return b""
 
     body = bytearray()
     body += struct.pack("<I", len(skeleton))
@@ -221,7 +306,12 @@ def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
     for a in arrays:
         body += struct.pack("<I", a.size)
 
-    if opts.shuffle and total_floats > 0:
+    if halves is not None:
+        if opts.shuffle:  # every low byte, then every high byte
+            body += (halves & 0xFF).astype(np.uint8).tobytes() + (halves >> 8).astype(np.uint8).tobytes()
+        else:  # each half little-endian
+            body += halves.tobytes()
+    elif opts.shuffle and total_floats > 0:
         flat = np.concatenate([a.astype("<f4", copy=False) for a in arrays])
         body += _shuffle(flat)
     else:
@@ -231,7 +321,7 @@ def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
 
     out = bytearray()
     out += MAGIC
-    out += bytes([FORMAT_VERSION, _CODEC_STORE, _DTYPE_F32, _FLAG_SHUFFLE if opts.shuffle else 0])
+    out += bytes([FORMAT_VERSION, _CODEC_STORE, dtype, _FLAG_SHUFFLE if opts.shuffle else 0])
     out += struct.pack("<H", len(header_bytes))
     out += header_bytes
     out += body
@@ -240,6 +330,9 @@ def _pack(nam_json: Union[bytes, bytearray, str], opts: PackOptions) -> bytes:
 
 def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON_BYTES) -> bytes:
     """Inverse of :func:`pack`: ``.namz`` bytes → reconstructed ``.nam`` JSON bytes.
+
+    Reads either dtype by the file's dtype byte, never its name: a float16 payload widens to the float32 of
+    the same value, exactly.
 
     Returns ``b""`` on any failure — not a ``.namz``, unknown version/codec/dtype, truncation, corruption, a
     payload float that is NaN or infinite, or an output over ``max_json_bytes``. Never raises on malformed
@@ -251,7 +344,8 @@ def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON
         return b""
 
     fmt, codec, dtype, flags = data[4], data[5], data[6], data[7]
-    if fmt < 1 or fmt > FORMAT_VERSION or codec != _CODEC_STORE or dtype != _DTYPE_F32:  # 1 and 2 only
+    es = _bytes_per_weight(dtype)
+    if fmt < 1 or fmt > FORMAT_VERSION or codec != _CODEC_STORE or es == 0:  # versions 1 and 2 only
         return b""
 
     off = 8
@@ -297,13 +391,20 @@ def unpack(data: Union[bytes, bytearray], max_json_bytes: int = DEFAULT_MAX_JSON
             lengths.append(ln)
             total_floats += ln
 
-        # The float32 payload must be EXACTLY the rest of the buffer (division, not multiply → no
-        # overflow). Rejects truncation and lying/short lengths.
-        if rem % 4 != 0 or total_floats != rem // 4:
+        # The payload must be EXACTLY the rest of the buffer, `es` bytes a weight (division, not multiply →
+        # no overflow). Rejects truncation and lying/short lengths.
+        if rem % es != 0 or total_floats != rem // es:
             return b""
 
         payload = data[p : p + rem]
-        if total_floats > 0:
+        if dtype == DTYPE_F16:
+            raw = np.frombuffer(payload, dtype=np.uint8)
+            if flags & _FLAG_SHUFFLE:  # every low byte, then every high byte
+                lo, hi = raw[:total_floats], raw[total_floats:]
+            else:  # each half little-endian
+                lo, hi = raw[0::2], raw[1::2]
+            flat = _widen_halves(lo.astype(np.uint16) | (hi.astype(np.uint16) << 8))
+        elif total_floats > 0:
             if flags & _FLAG_SHUFFLE:
                 flat = _unshuffle(payload, total_floats)
             else:

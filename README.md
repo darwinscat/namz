@@ -67,8 +67,8 @@ to half a step of an 11-bit significand — so `pack` writes it only when `dtype
 conventionally named `.nam16z` so the loss shows in its name. The readers need no option: `unpack`,
 `decode` and `readMeta` go by the dtype byte in the file, never by its name, and widen each half to the
 float32 of the same value, exactly. The skeleton and the metadata are the same bytes as the float32 file's.
-The language ports and the conformance vectors read it from their next release; until then only the C++
-reference does.
+The js and python ports read and write it too, byte-identical, from their 1.3.0 (`{ dtype: DTYPE_F16 }` /
+`PackOptions(dtype=DTYPE_F16)`, and `--f16` in their CLIs), and the conformance vectors pin it.
 
 `pack`/`unpack`/`readMeta` are byte-in / byte-out — no JUCE, no framework — so the same header drops into
 a plugin, a tool, or a script.

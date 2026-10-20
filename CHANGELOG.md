@@ -6,6 +6,50 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [ports 1.3.0] — 2026-10-20 — the ports and the vectors carry float16
+
+The C++ reference is unchanged (`NAMZ_VERSION` stays 4.4.0); its conformance runner reads the new `dtype`
+field.
+
+### Conformance
+The vectors pin dtype 1 (NAMZ-FORMAT.md "The float16 dtype"); every verdict is the reference CLI's, every
+old golden is byte-identical, and the manifest states a `dtype` (0 or 1) for every `valid` and `invalidNam`
+case — a float16 golden is a `.nam16z`.
+- `valid`: `f16-flat`, `f16-flat-noshuffle` (both plane layouts), `f16-nested` (a `SlimmableContainer` with
+  two submodels and stamped metadata), `f16-subnormals` (2^-24 steps, ties to even, ±2^-25 to a zero of its
+  sign, below it zero, 1023.5·2^-24 up to the smallest normal), `f16-edges` (±0, ±65504, 65519 and the float32
+  below 65520 to 65504, ties in a normal binade, 2047.5 carrying into the exponent, integer literals),
+  `f16-empty-weights`. Decoding one gives the half nearest each input float32, widened.
+- `decodeOnly`: `f16-widen`, `f16-widen-noshuffle` (signed zeros, subnormals, the smallest normals, 65504,
+  across two segments, printed with the reference's digits) and `f16-version-1`.
+- `invalid`: `bad-dtype-2` (a float16 file whose halves fit its lengths, with dtype 2), `f16-as-float32`,
+  `f16-truncated` (an odd payload), `f16-trailing-half`, `f16-short-lengths`, `f16-payload-inf`,
+  `f16-payload-nan` (in a segment no placeholder names). `bad-dtype` keeps its bytes; its reason now says the
+  length rule refuses it.
+- `invalidNam`, with dtype 1 (each packs as float32): `f16-overflow-tie` (65520), `f16-overflow-flt-max`,
+  `f16-overflow-nested`.
+
+### Language ports
+**`@darwins-cat/namz` 1.3.0** (npm) and **`namz` 1.3.0** (PyPI) read and write float16, byte-identical to the
+reference on every vector, on every finite half and every tie between two halves, and in the differential
+suites against the CLI.
+- **Write, on request only:** `pack(nam, { dtype: DTYPE_F16 })` / `pack(nam, PackOptions(dtype=DTYPE_F16))`,
+  mirroring `PackOptions::dtype`; `DTYPE_F32` stays the default. The half is rounded on the bits as the
+  reference's `halfOf` does; a weight with |w| ≥ 65520 refuses the whole `.nam`, and a dtype other than 0
+  and 1 is refused. Python takes the dtype as any Python or numpy integer; a bool, a float, a string or
+  `None` is no dtype.
+- **Read:** `unpack` goes by the dtype byte and widens each half exactly, in either plane layout; a payload
+  that is not `sum(lengths)` halves, an infinite or NaN half, and dtype 2 and up are refused. 1.2.0 refused
+  every dtype-1 file.
+- **CLI:** `encode … --f16` with the reference's name rule (`--f16` writes only a `*.nam16z`, a `*.nam16z`
+  only with `--f16`, exit 2 before reading), `map` notes a float16 file on stderr, and `verify [--f16]`
+  prints the reference's line, `max|w16-w32|` included; `verify` now refuses an option it does not know
+  (exit 2), as the reference does since 4.4.0.
+- **Fixed (Python, big-endian hosts only):** a shuffled float32 `pack` wrote its byte planes in the host's
+  byte order (since 1.0), so a big-endian host produced a different `.namz`; the planes and the float16
+  widening are now explicitly little-endian. Checked on an emulated s390x; a little-endian host's output is
+  unchanged.
+
 ## [4.4.0] — 2026-10-20 — float16 weights, on request: `.nam16z`
 
 ### Added

@@ -1,0 +1,1 @@
+{"architecture":"SlimmableContainer","sample_rate":48000,"config":{"submodels":[{"max_value":0.5,"model":{"architecture":"WaveNet","weights":[0.10000000149011612,-0.25,12.5]}},{"max_value":1.0,"model":{"architecture":"LSTM","weights":[0.30000001192092896,-0.699999988079071]}}]},"weights":[1.0,-1.0]}

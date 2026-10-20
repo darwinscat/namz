@@ -3,8 +3,9 @@
 // Copyright (c) 2026 Darwin's Cat — Oleh Tsymaienko <oleh@darwinscat.com> & Alisa Lafoks <alisa@darwinscat.com>.
 //
 // Native JavaScript port of the C++ reference (`include/namz.h`), byte-for-byte compatible: pack()
-// reproduces the reference `.namz` exactly and unpack() rehydrates weights bit-exact (float32). Pure JS,
-// zero dependencies. See NAMZ-FORMAT.md for the wire format and conformance/ for the shared vectors.
+// reproduces the reference `.namz` exactly and unpack() rehydrates weights bit-exact (float32). On request
+// (`dtype: DTYPE_F16`) pack() stores each weight as an IEEE half instead — LOSSY, half the payload, a
+// `.nam16z` by convention; unpack() reads either dtype by the file's dtype byte. Pure JS, zero dependencies. See NAMZ-FORMAT.md for the wire format and conformance/ for the shared vectors.
 
 import { NamNum, formatFixed6, parse, serialize } from "./json.js";
 
@@ -14,7 +15,10 @@ export const DEFAULT_MAX_JSON_BYTES = 256 * 1024 * 1024;
 
 const MAGIC = Uint8Array.of(0x4e, 0x41, 0x4d, 0x5a); // 'N','A','M','Z'
 const CODEC_STORE = 0;
-const DTYPE_F32 = 0;
+/** dtype 0: each weight a float32 — lossless to the engine, and the default. */
+export const DTYPE_F32 = 0;
+/** dtype 1: each weight the IEEE-754 half nearest its float32 — LOSSY, written only when asked for. */
+export const DTYPE_F16 = 1;
 const FLAG_SHUFFLE = 1 << 0;
 const INT64_MAX = 2n ** 63n - 1n;
 
@@ -71,6 +75,70 @@ function unshuffle(src, count) {
     out[4 * i + 1] = src[count + i];
     out[4 * i + 2] = src[2 * count + i];
     out[4 * i + 3] = src[3 * count + i];
+  }
+  return out;
+}
+
+// Bytes per stored weight: 4 for float32, 2 for float16, 0 for a dtype namz does not define.
+function bytesPerWeight(dtype) {
+  return dtype === DTYPE_F32 ? 4 : dtype === DTYPE_F16 ? 2 : 0;
+}
+
+// The IEEE-754 binary16 nearest a finite float32 (given as its bits), ties to even — on the bits, as the
+// reference's halfOf, so no rounding of the platform can move it. -1 if its half overflows (|f| >= 65520,
+// the tie above 65504 rounding to the even infinity) or it is not finite. A half subnormal is kept; below
+// the smallest one's midpoint (2^-25, a tie that goes to even) is a zero of the float's sign.
+function halfOf(x) {
+  const sign = (x >>> 16) & 0x8000;
+  const a = x & 0x7fffffff;
+  if (a >= 0x7f800000) return -1; // NaN or infinity
+  if (a >= 0x38800000) {
+    // >= 2^-14: a normal half, or past half's range
+    const e = (a >>> 23) - 112; // the half's biased exponent (127 - 15 = 112)
+    if (e >= 31) return -1; // >= 2^16: past every half
+    let h = (e << 10) | ((a >>> 13) & 0x3ff);
+    const rest = a & 0x1fff; // the 13 mantissa bits half has no room for
+    if (rest > 0x1000 || (rest === 0x1000 && (h & 1) !== 0)) h++; // a carry steps the exponent, as it should
+    if (h >= 0x7c00) return -1; // rounded up to infinity
+    return sign | h;
+  }
+  if (a < 0x33000000) return sign; // < 2^-25: nearer to zero than to the smallest subnormal
+  // [2^-25, 2^-14): a half subnormal in units of 2^-24 — the float32 significand >> (126 - its exponent)
+  const significand = (a & 0x7fffff) | 0x800000;
+  const shift = 126 - (a >>> 23); // 14 .. 24
+  let h = significand >>> shift;
+  const rest = significand & ((1 << shift) - 1);
+  const mid = 1 << (shift - 1);
+  if (rest > mid || (rest === mid && (h & 1) !== 0)) h++; // 0x400 is the smallest normal half: also right
+  return sign | h;
+}
+
+// The float32 bits of a half's value — exact, every half has one. A half infinity or NaN widens to the
+// float32 infinity or NaN, which the reader's finite check then refuses.
+function floatBitsOfHalf(h) {
+  const sign = (h & 0x8000) << 16;
+  const e = (h >>> 10) & 0x1f;
+  let m = h & 0x3ff;
+  if (e === 0x1f) return (sign | 0x7f800000 | (m << 13)) >>> 0;
+  if (e !== 0) return (sign | ((e + 112) << 23) | (m << 13)) >>> 0;
+  if (m === 0) return sign >>> 0;
+  let exp = 113; // a subnormal m * 2^-24: normalise it
+  while ((m & 0x400) === 0) {
+    m <<= 1;
+    exp--;
+  }
+  return (sign | (exp << 23) | ((m & 0x3ff) << 13)) >>> 0;
+}
+
+// The `total` halves of a float16 payload widened to float32. A half is little-endian, its low byte first;
+// with `planes` the payload is every low byte, then every high byte.
+function widenHalves(payload, total, planes) {
+  const out = new Float32Array(total);
+  const bits = new Uint32Array(out.buffer);
+  for (let k = 0; k < total; k++) {
+    const lo = planes ? payload[k] : payload[2 * k];
+    const hi = planes ? payload[total + k] : payload[2 * k + 1];
+    bits[k] = floatBitsOfHalf(lo | (hi << 8));
   }
   return out;
 }
@@ -171,9 +239,12 @@ export function isNamz(data) {
 /**
  * Parse NAM JSON (`.nam`) bytes/string → packed `.namz` bytes.
  * @param {Uint8Array|ArrayBuffer|string} namJson
- * @param {{shuffle?: boolean, metadata?: Object<string,string>}} [options]
+ * `options.dtype` is {@link DTYPE_F32} (the default, lossless) or {@link DTYPE_F16}: each weight's float32
+ * rounded to the nearest IEEE half, ties to even — LOSSY, half the payload; name such a file `.nam16z`.
+ * @param {{shuffle?: boolean, metadata?: Object<string,string>, dtype?: number}} [options]
  * @returns {Uint8Array} the `.namz`, or an EMPTY array on failure (invalid JSON, non-finite weight, nested
- *   deeper than {@link MAX_DEPTH}, a "weights" member holding an integer literal).
+ *   deeper than {@link MAX_DEPTH}, a "weights" member holding an integer literal, a dtype other than
+ *   DTYPE_F32 and DTYPE_F16, with DTYPE_F16 a weight past half's range: |w| >= 65520).
  */
 export function pack(namJson, options = {}) {
   try {
@@ -186,6 +257,7 @@ export function pack(namJson, options = {}) {
 function _pack(namJson, options) {
   const shuffleOn = options.shuffle !== false;
   const metadata = options.metadata || {};
+  const dtype = options.dtype === undefined ? DTYPE_F32 : options.dtype;
   const tree = parse(toText(namJson));
 
   let headerBytes = EMPTY;
@@ -212,13 +284,43 @@ function _pack(namJson, options) {
   }
   const skeleton = _enc.encode(serialize(tree));
 
+  if (bytesPerWeight(dtype) === 0) return EMPTY;
+
   let total = 0;
   for (const a of arrays) total += a.length;
+
+  let halves = null; // DTYPE_F16 only: every weight's half, in payload order
+  if (dtype === DTYPE_F16) {
+    halves = new Uint16Array(total);
+    let k = 0;
+    for (const a of arrays) {
+      const bits = new Uint32Array(a.buffer, a.byteOffset, a.length);
+      for (let i = 0; i < bits.length; i++) {
+        const h = halfOf(bits[i]);
+        if (h < 0) return EMPTY;
+        halves[k++] = h;
+      }
+    }
+  }
 
   const parts = [u32le(skeleton.length), skeleton, u32le(arrays.length)];
   for (const a of arrays) parts.push(u32le(a.length));
 
-  if (shuffleOn && total > 0) {
+  if (halves) {
+    const d = new Uint8Array(2 * total);
+    for (let i = 0; i < total; i++) {
+      const lo = halves[i] & 0xff;
+      const hi = halves[i] >>> 8;
+      if (shuffleOn) {
+        d[i] = lo;
+        d[total + i] = hi;
+      } else {
+        d[2 * i] = lo;
+        d[2 * i + 1] = hi;
+      }
+    }
+    parts.push(d);
+  } else if (shuffleOn && total > 0) {
     const flat = new Float32Array(total);
     let o = 0;
     for (const a of arrays) {
@@ -234,7 +336,7 @@ function _pack(namJson, options) {
 
   return concatBytes([
     MAGIC,
-    Uint8Array.of(FORMAT_VERSION, CODEC_STORE, DTYPE_F32, shuffleOn ? FLAG_SHUFFLE : 0),
+    Uint8Array.of(FORMAT_VERSION, CODEC_STORE, dtype, shuffleOn ? FLAG_SHUFFLE : 0),
     u16le(headerBytes.length),
     headerBytes,
     ...parts,
@@ -242,7 +344,8 @@ function _pack(namJson, options) {
 }
 
 /**
- * Inverse of {@link pack}: `.namz` bytes → reconstructed `.nam` JSON bytes.
+ * Inverse of {@link pack}: `.namz` bytes → reconstructed `.nam` JSON bytes. Reads either dtype by the file's
+ * dtype byte, never its name: a float16 payload widens to the float32 of the same value, exactly.
  * Returns an EMPTY array on any failure (not a `.namz`, unknown codec/dtype, truncation, corruption,
  * over-cap). Never throws on malformed input.
  * @param {Uint8Array|ArrayBuffer|string} data
@@ -263,7 +366,8 @@ export function unpack(data, maxJsonBytes = DEFAULT_MAX_JSON_BYTES) {
   const codec = bytes[5];
   const dtype = bytes[6];
   const flags = bytes[7];
-  if (fmt < 1 || fmt > FORMAT_VERSION || codec !== CODEC_STORE || dtype !== DTYPE_F32) return EMPTY; // 1 and 2 only
+  const es = bytesPerWeight(dtype);
+  if (fmt < 1 || fmt > FORMAT_VERSION || codec !== CODEC_STORE || es === 0) return EMPTY; // versions 1 and 2 only
 
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let off = 8;
@@ -304,15 +408,21 @@ export function unpack(data, maxJsonBytes = DEFAULT_MAX_JSON_BYTES) {
       total += ln;
     }
 
-    // The float32 payload must be EXACTLY the rest of the buffer. Rejects truncation / lying lengths.
-    if (rem % 4 !== 0 || total !== rem / 4) return EMPTY;
+    // The payload must be EXACTLY the rest of the buffer, `es` bytes a weight. Rejects truncation / lying
+    // lengths.
+    if (rem % es !== 0 || total !== rem / es) return EMPTY;
 
     const payload = bytes.subarray(p, p + rem);
-    const raw = total > 0 && flags & FLAG_SHUFFLE ? unshuffle(payload, total) : payload;
-    // Copy into a fresh, aligned buffer before viewing as float32 (payload may be an unaligned subarray).
-    const aligned = new Uint8Array(total * 4);
-    aligned.set(raw.subarray(0, total * 4));
-    const f32 = new Float32Array(aligned.buffer);
+    let f32;
+    if (dtype === DTYPE_F16) {
+      f32 = widenHalves(payload, total, (flags & FLAG_SHUFFLE) !== 0);
+    } else {
+      const raw = total > 0 && flags & FLAG_SHUFFLE ? unshuffle(payload, total) : payload;
+      // Copy into a fresh, aligned buffer before viewing as float32 (payload may be an unaligned subarray).
+      const aligned = new Uint8Array(total * 4);
+      aligned.set(raw.subarray(0, total * 4));
+      f32 = new Float32Array(aligned.buffer);
+    }
     for (let i = 0; i < total; i++) if (!Number.isFinite(f32[i])) return EMPTY; // non-finite payload
 
     const segs = [];

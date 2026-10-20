@@ -47,25 +47,44 @@ namz.read_meta(blob)   # {'tone_type': 'hi-gain', 'boost': 'true', 'device': 'tu
 | `unpack(data, max_json_bytes=256MiB) -> bytes` | `.namz` → `.nam` JSON. `b""` on corruption / over-cap. Never raises. |
 | `read_meta(data) -> dict[str, str]` | display header without touching weights. `{}` for v1 / non-`.namz`. |
 | `is_namz(data) -> bool` | cheap magic check. |
-| `PackOptions(shuffle=True, metadata={})` | packing options. |
+| `PackOptions(shuffle=True, metadata={}, dtype=DTYPE_F32)` | packing options; `dtype=DTYPE_F16` is float16, lossy. |
 
 `unpack` is total: for **any** input bytes it returns `bytes` (empty on failure) and never raises.
+
+### Float16 — `.nam16z` (lossy, opt-in)
+
+```python
+half = namz.pack(nam, namz.PackOptions(dtype=namz.DTYPE_F16))   # each weight -> the nearest IEEE half
+```
+
+**Float16 is lossy, and it is written only when asked for.** Each weight is rounded to the IEEE half
+nearest its float32 (ties to even) — up to half a step of an 11-bit significand — for a payload half the
+size; float32 (`DTYPE_F32`) stays the default and the only lossless dtype. `pack` refuses the whole `.nam`
+(`b""`) if a weight would pass half's range (|w| ≥ 65520; up to there it rounds to 65504 at most). Name such
+a file `.nam16z`, so the loss shows in its name. `unpack` and `read_meta` need no option: they go by the
+dtype byte in the file, never its name, and widen each half to the float32 of the same value, exactly. The
+bytes are the C++ reference's (4.4.0) for the same input, checked against the shared vectors; the rounding is
+done on the bits, so no NumPy version or hardware half support moves it.
 
 ## CLI
 
 ```bash
 namz encode in.nam out.namz [--no-shuffle] [--set key=value ...]
-namz decode in.namz out.nam
-namz map    in.namz [--json]        # print the metadata header (no weight decode)
-namz verify in.nam                  # pack->unpack round-trip check + ratio
+namz encode in.nam out.nam16z --f16 [--no-shuffle] [--set key=value ...]   # float16, LOSSY
+namz decode in.namz|in.nam16z out.nam
+namz map    in.namz|in.nam16z [--json]   # print the metadata header (no weight decode)
+namz verify in.nam [--f16]          # pack->unpack round-trip check + ratio
 ```
+
+`--f16` writes only a `*.nam16z`, and a `*.nam16z` only with `--f16`; either mismatch is refused (exit 2)
+before anything is read.
 
 (Also available as `python -m namz`.)
 
 ## Guarantees
 
 - **Lossless to float32** — `unpack(pack(x))` is bit-exact at any nesting depth, including `-0.0`,
-  subnormals, and `FLT_MAX`.
+  subnormals, and `FLT_MAX`. That is the default dtype's promise; float16 is lossy by design and opt-in.
 - **Deterministic** — `pack(x)` is byte-identical across runs and platforms; the codec is idempotent.
 - **Robust** — every malformed input (bad magic, unknown version/codec/dtype, truncation, trailing junk,
   a lying `metaLen`/`numArrays`, a placeholder naming no segment, an over-cap body) is rejected cleanly.

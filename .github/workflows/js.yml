@@ -39,25 +39,27 @@ jobs:
         run: node --test
 
   # Publish to npm on a `js-vX.Y.Z` tag, with build provenance.
-  # Oleh: add an `NPM_TOKEN` repo secret (an npm automation token for the `namz` package) before tagging.
+  # Published by Trusted Publishing (below): no NPM_TOKEN secret is needed or read.
   publish:
     name: publish to npm
     if: startsWith(github.ref, 'refs/tags/js-v')
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Trusted Publishing (OIDC, set up on npmjs.com 20.10.2026: darwinscat/namz, js.yml, no environment): npm takes this
+    # workflow's identity token instead of a stored secret — nothing to rotate. It needs id-token: write and npm 11.5.1+.
+    # npm attaches provenance by itself on this path; a failed attempt can leave a Rekor entry that makes a retry of the
+    # very same tarball answer 409, so a retry after a half-done publish needs a new version.
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      # Note: no `--provenance`. Provenance signs an entry into Sigstore's Rekor transparency log, which is
-      # keyed by the (deterministic) tarball digest — a failed attempt leaves an entry that makes every
-      # retry 409 ("equivalent entry already exists"). Re-enable for a future version if desired.
+      - name: npm with Trusted Publishing
+        run: npm install -g npm@latest
       - name: Publish
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

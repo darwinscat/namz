@@ -71,7 +71,8 @@ test("corrupting header-critical bytes rejects", () => {
   };
   assert.equal(unpack(withByte(4, 9)).length, 0, "version 9 accepted");
   assert.equal(unpack(withByte(5, 1)).length, 0, "codec 1 accepted");
-  assert.equal(unpack(withByte(6, 1)).length, 0, "dtype 1 accepted");
+  assert.equal(unpack(withByte(6, 1)).length, 0, "dtype 1 on a float32 payload accepted"); // twice the halves
+  assert.equal(unpack(withByte(6, 2)).length, 0, "dtype 2 accepted");
 });
 
 test("any accepted single-byte mutation is a fixed point", () => {
