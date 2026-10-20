@@ -6,6 +6,8 @@ For each ``manifest["valid"]`` entry:
   2. decode(golden) must reproduce the weights **bit-exact** (float32);
   3. decode → encode must reproduce the golden (idempotence).
 For each ``manifest["invalid"]`` entry: decode must be **rejected** (empty), never crash.
+For each ``manifest["decodeOnly"]`` entry: decode must **byte-match** the reference's ``.nam``.
+For each ``manifest["invalidNam"]`` entry: encode must be **refused** (empty).
 """
 
 from __future__ import annotations
@@ -84,8 +86,34 @@ def test_valid_vectors(manifest, conformance_dir):
 
 
 def test_invalid_vectors_rejected(manifest, conformance_dir):
+    # every case is tried, and every one accepted is named — one wrong verdict must not hide the next
+    accepted = []
     for case in manifest["invalid"]:
         blob = _read(os.path.join(conformance_dir, case["file"]))
-        assert namz.unpack(blob) == b"", (
-            f"[{case['name']}] should have been rejected: {case['why']}"
-        )
+        if namz.unpack(blob) != b"":
+            accepted.append(f"[{case['name']}] {case['why']}")
+    assert not accepted, "should have been rejected:\n" + "\n".join(accepted)
+
+
+def test_decode_only_and_refused_inputs_present(manifest):
+    assert manifest.get("decodeOnly") and manifest.get("invalidNam")
+
+
+def test_decode_only_vectors(manifest, conformance_dir):
+    # files pack never writes (a hand-made placeholder, a v1 container): unpack gives the reference's bytes
+    wrong = []
+    for case in manifest.get("decodeOnly", []):
+        got = namz.unpack(_read(os.path.join(conformance_dir, case["file"])))
+        want = _read(os.path.join(conformance_dir, case["output"]))
+        if got != want:
+            wrong.append(f"[{case['name']}] {case['why']}: got {got!r}")
+    assert not wrong, "\n".join(wrong)
+
+
+def test_invalid_nam_refused(manifest, conformance_dir):
+    packed = []
+    for case in manifest.get("invalidNam", []):
+        src = _read(os.path.join(conformance_dir, case["file"]))
+        if namz.pack(src) != b"":
+            packed.append(f"[{case['name']}] {case['why']}")
+    assert not packed, "should have been refused:\n" + "\n".join(packed)

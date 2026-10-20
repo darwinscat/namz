@@ -66,22 +66,26 @@ namz verify in.nam                  # pack->unpack round-trip check + ratio
   subnormals, and `FLT_MAX`.
 - **Deterministic** — `pack(x)` is byte-identical across runs and platforms; the codec is idempotent.
 - **Robust** — every malformed input (bad magic, unknown version/codec/dtype, truncation, trailing junk,
-  a lying `metaLen`/`numArrays`, an over-cap body) is rejected cleanly.
+  a lying `metaLen`/`numArrays`, a placeholder naming no segment, an over-cap body) is rejected cleanly.
+  Any JSON nested deeper than `MAX_DEPTH` (128) is refused — a `.nam` by pack, a skeleton by unpack, a
+  metadata block reads as none — without the parser ever following it down; and pack refuses a `.nam` whose
+  `"weights"` member holds an integer literal, which would read back as a placeholder.
 
 ### Byte-match note
 
 JavaScript has a single `Number` type, so this port ships its own JSON parse/serialize that (a) preserves
 the integer-vs-float distinction the reference relies on (so `-18.0` stays `-18.0`, not `-18`), (b) sorts
-object keys by UTF-8 byte order like nlohmann's `std::map`, and (c) reproduces nlohmann's exact
-double-to-string formatting (fixed vs scientific thresholds, `e±XX` exponents). Integer literals are kept
-exact via `BigInt` across the full int64/uint64 range. This is validated byte-for-byte against the
-reference over the whole NAM domain. Two documented edges, both outside that domain:
+object keys by UTF-8 byte order like nlohmann's `std::map`, and (c) prints every double with nlohmann's own
+digits: a port of its Grisu2 (`dtoa_impl`), which is neither always the shortest nor always the closest
+(`-198.70986938476562` prints as `-198.70986938476563`), and of its switch between fixed and exponent form
+(`1e+15`, `1e-05`). Integer literals are kept exact via `BigInt` across the full int64/uint64 range. The
+parser refuses what nlohmann refuses — a number past every double, an escaped lone surrogate — wherever it
+stands, a value a later duplicate key replaces included. This is validated byte-for-byte against the
+reference: the shared vectors, and a differential run over random doubles and float32 values when a built
+reference CLI is around (`NAMZ_CLI`).
 
-- Non-finite weights (`NaN`/`±Inf`) are out of contract and are **rejected**, exactly as the reference
-  rejects them.
-- A *non-weight* number whose magnitude exceeds ~1e21 (or an integer past `uint64`) may differ by one ULP
-  — not from formatting, but because nlohmann's own number *parser* is not correctly rounded there. Such
-  values never occur in NAM config.
+- A weight whose float32 is not finite (`1e39`) is refused by pack, and a payload float that is NaN or
+  infinite by unpack, exactly as the reference refuses them.
 
 ## Development
 

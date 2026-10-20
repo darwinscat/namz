@@ -68,21 +68,27 @@ namz verify in.nam                  # pack->unpack round-trip check + ratio
   subnormals, and `FLT_MAX`.
 - **Deterministic** — `pack(x)` is byte-identical across runs and platforms; the codec is idempotent.
 - **Robust** — every malformed input (bad magic, unknown version/codec/dtype, truncation, trailing junk,
-  a lying `metaLen`/`numArrays`, an over-cap body) is rejected cleanly.
+  a lying `metaLen`/`numArrays`, a placeholder naming no segment, an over-cap body) is rejected cleanly.
+  Any JSON nested deeper than `MAX_DEPTH` (128) is refused — a `.nam` by pack, a skeleton by unpack, a
+  metadata block reads as none — without the parser ever following it down; and pack refuses a `.nam` whose
+  `"weights"` member holds an integer literal, which would read back as a placeholder.
 
 ### Byte-match note
 
-The skeleton is minified JSON with keys sorted ascending, matching the reference (nlohmann). It is
-validated byte-for-byte against the reference over the whole NAM domain (a large differential fuzz —
-config integers, simple decimals, non-ASCII, control chars, nesting). The weight payload itself is always
-exact float32, never text. Two documented edges, both outside the NAM domain:
+The skeleton is minified JSON with keys sorted ascending, matching the reference (nlohmann). Every double
+is printed with nlohmann's own digits — a port of its Grisu2 (`dtoa_impl`), which is neither always the
+shortest nor always the closest (`-198.70986938476562` prints as `-198.70986938476563`), and of its switch
+between fixed and exponent form (`1e+15` where `repr` gives `1000000000000000.0`) — so the serializer is the
+port's own: `json.dumps` hard-codes `float.__repr__`. JSON text is read as UTF-8 only, and refused wherever
+nlohmann refuses it (a number past every double, an escaped lone surrogate), a value a later duplicate key
+replaces included. It is validated byte-for-byte against the reference: the shared vectors, and a
+differential run when a built reference CLI is around (`NAMZ_CLI`). The weight payload itself is always
+exact float32, never text.
 
-- Non-finite weights (`NaN`/`±Inf`) are out of contract and are **rejected**, exactly as the reference
-  rejects them.
-- An integer literal outside `[int64_min, uint64_max]` in a *non-weight* field is coerced to a double, as
-  nlohmann does; this is byte-exact for double-representable magnitudes (e.g. `2**64`). For extreme
-  23+-digit integers nlohmann's own parser rounds imprecisely and may differ by one ULP — such values
-  never occur in NAM config.
+- A weight whose float32 is not finite (`1e39`) is refused by pack, and a payload float that is NaN or
+  infinite by unpack, exactly as the reference refuses them.
+- An integer literal outside `[int64_min, uint64_max]` is a double, as nlohmann holds it.
+- Printing its own digits is slower than `repr`: `unpack` of a 15,000-float capture takes about 47 ms.
 
 ## Development
 

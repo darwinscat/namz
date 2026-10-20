@@ -6,9 +6,10 @@
 // reproduces the reference `.namz` exactly and unpack() rehydrates weights bit-exact (float32). Pure JS,
 // zero dependencies. See NAMZ-FORMAT.md for the wire format and conformance/ for the shared vectors.
 
-import { NamNum, parse, serialize } from "./json.js";
+import { NamNum, formatFixed6, parse, serialize } from "./json.js";
 
-export const FORMAT_VERSION = 2; // readers still accept 1 (no meta block)
+export { MAX_DEPTH } from "./json.js";
+export const FORMAT_VERSION = 2; // readers accept 1 (no meta block) and 2, nothing else
 export const DEFAULT_MAX_JSON_BYTES = 256 * 1024 * 1024;
 
 const MAGIC = Uint8Array.of(0x4e, 0x41, 0x4d, 0x5a); // 'N','A','M','Z'
@@ -98,12 +99,16 @@ function isNumericWeights(v) {
 }
 
 // DFS in sorted key order (== nlohmann std::map): extract every numeric "weights" array as float32 and
-// replace it with its ordinal integer index.
+// replace it with its ordinal integer index. A "weights" member that already holds an integer literal
+// throws: the skeleton would store it as a placeholder, which a reader fills with a segment or refuses.
 function extractWeights(node, out) {
   if (isPlainObject(node)) {
     const keys = Object.keys(node).sort(_compareUtf8);
     for (const key of keys) {
       const val = node[key];
+      if (key === "weights" && val instanceof NamNum && !val.isFloat) {
+        throw new TypeError('an integer "weights" member would read back as a placeholder');
+      }
       if (key === "weights" && isNumericWeights(val)) {
         out.push(Float32Array.from(val, (nn) => nn.toNumber()));
         node[key] = NamNum.int(BigInt(out.length - 1));
@@ -167,7 +172,8 @@ export function isNamz(data) {
  * Parse NAM JSON (`.nam`) bytes/string → packed `.namz` bytes.
  * @param {Uint8Array|ArrayBuffer|string} namJson
  * @param {{shuffle?: boolean, metadata?: Object<string,string>}} [options]
- * @returns {Uint8Array} the `.namz`, or an EMPTY array on failure (invalid JSON, non-finite weight).
+ * @returns {Uint8Array} the `.namz`, or an EMPTY array on failure (invalid JSON, non-finite weight, nested
+ *   deeper than {@link MAX_DEPTH}, a "weights" member holding an integer literal).
  */
 export function pack(namJson, options = {}) {
   try {
@@ -257,7 +263,7 @@ export function unpack(data, maxJsonBytes = DEFAULT_MAX_JSON_BYTES) {
   const codec = bytes[5];
   const dtype = bytes[6];
   const flags = bytes[7];
-  if (fmt > FORMAT_VERSION || codec !== CODEC_STORE || dtype !== DTYPE_F32) return EMPTY;
+  if (fmt < 1 || fmt > FORMAT_VERSION || codec !== CODEC_STORE || dtype !== DTYPE_F32) return EMPTY; // 1 and 2 only
 
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let off = 8;
@@ -328,7 +334,8 @@ export function unpack(data, maxJsonBytes = DEFAULT_MAX_JSON_BYTES) {
 
 /**
  * Read the display-metadata block WITHOUT touching the weights. Empty for a v1 `.namz`, a non-`.namz`
- * buffer, or one packed without metadata. Values are strings (bool → "true"/"false", number → digits).
+ * buffer, or one packed without metadata. Values are strings (bool → "true"/"false", integer → its digits,
+ * other number → C's "%f", array or object → its JSON as the reference prints it).
  * @param {Uint8Array|ArrayBuffer|string} data
  * @returns {Object<string,string>}
  */
@@ -357,7 +364,7 @@ export function readMeta(data) {
       if (typeof v === "string") out[k] = v;
       else if (v === true) out[k] = "true";
       else if (v === false) out[k] = "false";
-      else if (v instanceof NamNum) out[k] = v.isFloat ? v.num.toFixed(6) : v.int.toString();
+      else if (v instanceof NamNum) out[k] = v.isFloat ? formatFixed6(v.num) : v.int.toString();
       else out[k] = serialize(v);
     }
   }

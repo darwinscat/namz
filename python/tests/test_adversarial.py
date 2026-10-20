@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import os
 import struct
+import time
+import warnings
 
 import numpy as np
 import pytest
@@ -75,7 +77,7 @@ def test_header_critical_bytes_reject_when_corrupted():
         b[pos] ^= 0xFF
         assert namz.unpack(bytes(b)) == b"", f"corrupting header byte {pos} was accepted"
     # explicit reserved values
-    assert namz.unpack(FULL[:5] + bytes([9]) + FULL[6:]) == b"", "version 9 accepted"
+    assert namz.unpack(FULL[:4] + bytes([9]) + FULL[5:]) == b"", "version 9 accepted"
     assert namz.unpack(FULL[:5] + bytes([1]) + FULL[6:]) == b"", "codec 1 (deflate) accepted"
     assert namz.unpack(FULL[:6] + bytes([1]) + FULL[7:]) == b"", "dtype 1 (float16) accepted"
 
@@ -218,3 +220,141 @@ def test_shuffle_flag_mismatch_changes_values_not_stability():
     assert isinstance(out, bytes)
     if out:
         assert namz.unpack(namz.pack(out)) == out
+
+
+# -- the stated rules (NAMZ-FORMAT.md "Placeholders and depth"), held to the reference's own tests -------
+def _nested(depth: int, inner: str = "0") -> str:
+    return "[" * depth + inner + "]" * depth
+
+
+def _craft(skeleton: str, lengths, floats: int, version: int = 2, meta: "str | bytes" = "") -> bytes:
+    """A container written by hand: any skeleton, any lengths, ``floats`` floats (0.5, 1.5, ...) of
+    unshuffled payload — the lengths need not sum to it. Version 1 has no metadata block."""
+    sk, mb = skeleton.encode(), (meta if isinstance(meta, bytes) else meta.encode())
+    out = b"NAMZ" + bytes([version, 0, 0, 0])
+    if version >= 2:
+        out += struct.pack("<H", len(mb)) + mb
+    out += struct.pack("<I", len(sk)) + sk + struct.pack("<I", len(lengths))
+    out += b"".join(struct.pack("<I", n) for n in lengths)
+    return out + b"".join(struct.pack("<f", 0.5 + i) for i in range(floats))
+
+
+def test_max_depth_is_the_references_kmaxdepth():
+    assert namz.MAX_DEPTH == 128
+
+
+def test_depth_128_read_129_refused_by_pack_unpack_and_read_meta():
+    def nam(d):
+        return '{"weights":[1.5],"x":%s}' % _nested(d - 1)
+
+    assert namz.unpack(namz.pack(nam(128))) == nam(128).encode(), "pack takes a .nam 128 deep and it reads back"
+    assert namz.pack(nam(129)) == b"", "pack refuses a .nam 129 deep"
+
+    def sk(d):  # an object around arrays around an empty array (an empty one is 1)
+        return '{"weights":0,"x":%s}' % _nested(d - 2, "[]")
+
+    assert namz.unpack(_craft(sk(128), [1], 1)), "unpack reads a skeleton 128 deep"
+    assert namz.unpack(_craft(sk(129), [1], 1)) == b"", "unpack refuses a skeleton 129 deep"
+    one = '{"weights":0}'
+    assert list(namz.read_meta(_craft(one, [1], 1, meta='{"a":%s}' % _nested(127)))) == ["a"]
+    assert namz.read_meta(_craft(one, [1], 1, meta='{"a":%s}' % _nested(128))) == {}, "a meta block 129 deep"
+
+
+def test_depth_100000_refused_never_raised():
+    assert namz.pack('{"weights":[1.5],"x":%s}' % _nested(99999)) == b""
+    assert namz.pack(('{"weights":[1.5],"x":%s}' % _nested(99999)).encode()) == b""
+    assert namz.unpack(_craft('{"weights":0,"x":%s}' % _nested(99999), [1], 1)) == b""
+    assert namz.read_meta(_craft('{"weights":0}', [1], 1, meta='{"a":%s}' % _nested(32000))) == {}
+
+
+def test_text_scans_are_linear_on_an_unterminated_string():
+    # a quote, then escaped quotes and never a closing one, then more brackets than the fast path takes: a
+    # scan that retried the string from every quote after it would be quadratic — about ten seconds at this
+    # size, against a few milliseconds. The second text sends the lone-surrogate scan down the same road.
+    for blob in ('"' + '\\"' * 30000 + "[" * 200, '"' + '\\u0041\\"' * 30000 + "[" * 200):
+        start = time.perf_counter()
+        assert namz.pack(blob.encode()) == b""
+        assert time.perf_counter() - start < 1.0, "a text scan went quadratic"
+
+
+def test_depth_counts_a_member_a_later_duplicate_key_replaces():
+    deep = _nested(128)  # 129 deep inside the object, as written
+    assert namz.pack('{"x":%s,"x":0,"weights":[0.5]}' % deep) == b""
+    assert namz.unpack(_craft('{"weights":0,"x":%s,"x":0}' % deep, [1], 1)) == b""
+    assert namz.read_meta(_craft('{"weights":0}', [1], 1, meta='{"a":%s,"a":0,"name":"n"}' % deep)) == {}
+
+
+def test_a_value_a_later_duplicate_key_replaces_is_still_read():
+    # nlohmann refuses the text before it drops a duplicate: a number past every double, a lone surrogate
+    for nam in ('{"x":1e400,"x":0,"weights":[0.5]}', '{"x":%s,"x":0,"weights":[0.5]}' % ("9" * 400),
+                '{"s":"\\ud800","s":"ok","weights":[0.5]}'):
+        assert namz.pack(nam) == b"", nam
+
+
+def test_json_text_is_utf8():
+    nam = '{"architecture":"X","weights":[0.5]}'
+    for enc in ("utf-16-le", "utf-16-be", "utf-16", "utf-32-le", "utf-32"):
+        assert namz.pack(nam.encode(enc)) == b"", enc
+    # one UTF-8 byte-order mark is skipped, as nlohmann skips it
+    assert namz.pack(b"\xef\xbb\xbf" + nam.encode()) == namz.pack(nam.encode()) != b""
+    one = '{"weights":0}'
+    assert namz.read_meta(_craft(one, [1], 1, meta='{"a":"b"}'.encode("utf-16-le"))) == {}
+    assert namz.read_meta(_craft(one, [1], 1, meta=b"\xef\xbb\xbf" + b'{"a":"b"}')) == {"a": "b"}
+
+
+def test_pack_refuses_a_weight_past_float32_without_a_warning():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # numpy's "overflow encountered in cast" would raise here
+        assert namz.pack('{"weights":[0.5,1e39]}') == b""
+        assert namz.pack('{"a":{"weights":[-3.5e38]},"weights":[0.5]}') == b""
+    assert namz.pack('{"weights":[3.4028235e38]}') != b"", "rounds to FLT_MAX: kept"
+
+
+def test_read_meta_reads_what_the_reference_reads():
+    # every expected value here is what the reference CLI's `map --json` prints for the same block
+    def meta(block):
+        return namz.read_meta(_craft('{"weights":0}', [1], 1, meta=block))
+
+    assert meta('{"a":[1,2.5],"b":{"y":1,"x":1e15},"c":[0.25354045629501343,"\u00e9"]}') == {
+        "a": "[1,2.5]", "b": '{"x":1e+15,"y":1}', "c": '[0.25354045629501343,"\u00e9"]'}
+    assert meta('{"i":-9223372036854775808,"u":18446744073709551615,"d":18446744073709551616,"f":0.0078125}') == {
+        "i": "-9223372036854775808", "u": "18446744073709551615", "d": "18446744073709551616.000000",
+        "f": "0.007812"}
+    # what the reference cannot read is no metadata: a number past every double, a lone surrogate
+    for block in ('{"n":"x","big":%s}' % ("9" * 400), '{"n":"x","big":1e400}', '{"n":"\\ud800"}',
+                  '{"n":"x","s":"\\udc00","s":"y"}'):
+        assert meta(block) == {}, block
+
+
+def test_pack_refuses_an_integer_weights_member_anywhere():
+    for nam in (
+        '{"weights":7}',
+        '{"architecture":"X","config":{"weights":0},"weights":[0.5]}',
+        '{"weights":-0}',
+        '{"weights":18446744073709551615}',
+        '{"a":[{"b":{"weights":-3}}],"weights":[1.5]}',
+    ):
+        assert namz.pack(nam) == b"", nam
+    stamped = namz.PackOptions(metadata={"weights": "7"})  # typed to the integer 7 on the way in
+    assert namz.pack('{"weights":[0.5]}', stamped) == b"", "metadata weights=7"
+
+
+def test_pack_keeps_a_weights_that_is_no_integer_literal():
+    for nam, back in (
+        ('{"weights":1.0}', '{"weights":1.0}'),
+        ('{"weights":0e0}', '{"weights":0.0}'),
+        ('{"weights":18446744073709551616}', '{"weights":1.8446744073709552e+19}'),
+        ('{"weights":"7"}', '{"weights":"7"}'),
+        ('{"weights":true}', '{"weights":true}'),
+        ('{"weights":null}', '{"weights":null}'),
+        ('{"weights":{"a":1}}', '{"weights":{"a":1}}'),
+        ('{"weights":["a",1]}', '{"weights":["a",1]}'),
+    ):
+        assert namz.unpack(namz.pack(nam)) == back.encode(), nam
+
+
+def test_format_version_1_and_2_read_0_refused():
+    one = '{"weights":0}'
+    assert namz.unpack(_craft(one, [1], 1, version=1)) == b'{"weights":[0.5]}'
+    assert namz.unpack(_craft(one, [1], 1, version=2)) == b'{"weights":[0.5]}'
+    assert namz.unpack(_craft(one, [1], 1, version=0)) == b"", "version 0 accepted"
