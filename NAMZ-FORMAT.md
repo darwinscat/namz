@@ -9,21 +9,26 @@ A `.nam` file is JSON whose bulk is one or more flat `"weights"` arrays written 
 the raw JSON, and **bit-exact** to what the engine computes. Everything except the weight arrays
 (architecture / config / metadata) is preserved verbatim in a JSON *skeleton*.
 
+On request the weights can be stored as IEEE **float16** instead — half the payload, and **lossy**: see
+"The float16 dtype (`.nam16z`)". Everything this document calls lossless or bit-exact is float32's.
+
 Reference implementation: [`include/namz.h`](include/namz.h). Tests: [`tests/roundtrip.cpp`](tests/roundtrip.cpp).
 
 ## Wire format
 
 All multi-byte integers are **little-endian** (written explicitly, so the container is endian-portable).
 The float32 payload is stored in host byte order — every real NAM target, and NAM itself, is
-little-endian IEEE-754.
+little-endian IEEE-754. A float16 is little-endian, written byte by byte.
 
 ```
 [0..3]   magic          'N','A','M','Z'
 [4]      formatVersion  2   (readers still accept 1 = no meta block; every other value, 0 included, is refused)
 [5]      codec          0 = store/uncompressed;       1 = deflate (reserved), 2 = zstd (reserved)
-[6]      dtype          0 = float32;                  1 = float16 (reserved, lossy)
-[7]      flags          bit0 = weight bytes shuffled into 4 byte-planes (lossless; groups the
-                               structured bytes so an OUTER compressor squeezes ~6% more)
+[6]      dtype          0 = float32;                  1 = float16 (lossy, written only on request; 4.4.0)
+                        every other value is refused
+[7]      flags          bit0 = weight bytes shuffled into byte-planes, one per byte of a weight: 4 for
+                               float32, 2 for float16 (lossless; groups the structured bytes so an
+                               OUTER compressor squeezes ~6% more on float32, ~4% on float16)
 [8..9]   metaLen        u16 — bytes of the display-metadata JSON that follows (v2 only)
 [meta]   metaLen bytes  small JSON of display fields — read via readMeta() WITHOUT touching the weights
 [..]     body (codec 0 = stored verbatim):
@@ -32,8 +37,14 @@ little-endian IEEE-754.
                                           its ordinal integer index
              u32  numArrays
              u32  lengths[numArrays]      float count of each weights array (in index order)
-             u8   payload[]               sum(lengths) * 4 bytes of float32 (byte-shuffled iff flags bit0)
+             u8   payload[]               sum(lengths) * 4 bytes of float32, or sum(lengths) * 2 bytes of
+                                          float16 (byte-shuffled iff flags bit0)
 ```
+
+| dtype | stored weight | bytes | shuffled payload (flags bit0) | lossless |
+|---|---|---|---|---|
+| 0 | IEEE-754 binary32, host order (little-endian) | 4 | plane 0 = every weight's byte 0, … plane 3 = byte 3 | yes — the engine's float32 |
+| 1 | IEEE-754 binary16, little-endian | 2 | plane 0 = every weight's low byte, then plane 1 = every high byte | **no** — rounded to half |
 
 `unpack` un-shuffles the payload, rebuilds the JSON (weights re-inserted as float32 numbers) and hands it
 to the usual `parse → NAM engine` path, so the loaded model is identical. That path prints every weight
@@ -42,6 +53,45 @@ skeleton as stored — each placeholder still an integer — and un-shuffles the
 float32 vector per segment, so a loader that builds its model itself reads the architecture and config
 from the skeleton and takes each model's weights from the segment its placeholder names. Filling every
 placeholder with its segment and dumping the tree gives exactly the bytes `unpack` returns.
+
+## The float16 dtype (`.nam16z`)
+
+Dtype 1 stores each weight as an IEEE-754 binary16 ("half"): 2 bytes instead of 4. It exists for a
+download where bytes matter more than the last bits — a web page fetching captures — while plugins and the
+`.namz` downloads keep float32. It is **lossy**, and so it is written only when asked for
+(`PackOptions::dtype = DtypeF16`, the CLI's `--f16`); float32 stays the default, byte for byte what 4.3.1
+wrote.
+
+- **Rounding.** The half is the one nearest the weight's **float32** — the same float32 a dtype-0 file
+  stores — round to nearest, ties to even. So packing a `.nam` as float16 and re-packing as float16 the
+  `.nam` a float32 `.namz` unpacks to give the same file. A float32 whose half is subnormal keeps it as a
+  half subnormal (step 2^-24); one below 2^-25 is a zero of its sign, and ±2^-25 itself is a tie that goes
+  to the zero of its sign (−2^-25 → `0x8000`, the sign is kept).
+- **Range.** `pack` refuses the whole `.nam` (writes nothing) if any weight's float32 is not finite, or its
+  half would overflow: |w| ≥ 65520, the tie above the largest half 65504 rounding to the even infinity.
+  Up to there a weight rounds to 65504 at most. The 230 real captures measured for 4.4.0
+  stay below 3 (largest |w| 2.65).
+- **Bytes.** Each half is little-endian. Unshuffled, the payload is the halves in order, low byte first;
+  shuffled (flags bit0), it is every weight's low byte, then every weight's high byte.
+- **Reading.** `unpack` and `decode` go by the dtype byte, never by a file name. Each half widens to the
+  float32 of the same value — exact, every half has one — so `decode`'s segments are `std::vector<float>`
+  as for float32, and `unpack` prints those float32 values as it prints a float32 file's. Every reader
+  rule holds unchanged, with the payload `sum(lengths) * 2` bytes exactly: truncation at any byte, trailing
+  bytes, lengths that do not sum to the payload, a payload half that is an infinity or NaN, the caps
+  (`decode`'s `maxFloats` counts weights, whichever their width). `unpack` and `decode` keep one verdict.
+- **Everything else is the same bytes.** Magic, version, codec, flags, the meta block and the skeleton
+  are what the float32 file of the same `.nam` holds; only the dtype byte and the payload differ.
+- **The name.** A float16 file is conventionally named `.nam16z`, so the loss shows in the name. The CLI
+  holds to it: `--f16` writes only a `*.nam16z`, and a `*.nam16z` only with `--f16`.
+- **What it costs.** Each weight moves by at most half a step of half's 11-bit significand — 2^-11 of
+  its magnitude — or by 2^-25 at most below 2^-14. On the real captures this was measured at 58 dB or more under the
+  output and 32–41 dB under each capture's own training error. The files are 0.55× the float32 `.namz`,
+  0.52× after `brotli -q 11`; the 2-plane shuffle takes another ~4% off the brotli size.
+
+The C++ reference writes and reads dtype 1 as of 4.4.0. The language ports and the conformance vectors
+follow in their own release; until then the ports refuse dtype 1 as an unknown dtype, and the vector
+`bad-dtype` — a float32 file with its dtype byte set to 1 — is still refused by the reference, now by the
+length rule (its 4-byte payload is twice what its lengths ask of 2-byte halves).
 
 ## Placeholders and depth
 
@@ -76,10 +126,11 @@ back; `readMeta` returns no metadata for a meta block deeper than 128 (the meta 
 walk over the tree — the reader's own, a JSON library's print and compare, a loader's model builder — off
 the end of the stack.
 
-**Finite weights.** Every float the payload stores is a finite float32. `unpack` and `decode` refuse a file
-whose payload holds a NaN or an infinity, whether a placeholder names its segment or not; `pack` refuses a
-`.nam` holding a weight whose float32 is not finite — `1e39` is a finite JSON number past the float32 range
-(`3.4028235e38` rounds to `FLT_MAX` and is kept).
+**Finite weights.** Every float the payload stores is a finite float32 (a finite half, for dtype 1).
+`unpack` and `decode` refuse a file whose payload holds a NaN or an infinity, whether a placeholder names
+its segment or not; `pack` refuses a `.nam` holding a weight whose float32 is not finite — `1e39` is a
+finite JSON number past the float32 range (`3.4028235e38` rounds to `FLT_MAX` and is kept) — and, for
+dtype 1, one whose half overflows (|w| ≥ 65520).
 
 **JSON text.** Every JSON text — the `.nam`, the skeleton, the meta block — is UTF-8, one leading byte-order
 mark skipped; UTF-16 or UTF-32 is not JSON text here. It is refused wherever the reference's JSON library
@@ -101,12 +152,17 @@ The C++ reference states the placeholder and depth rules as of 4.3.0, and all of
 
 - **Lossless to float32** — for every weight, `unpack(pack(x)) == (float)x`, bit-exact, at any nesting
   depth up to 128 (incl. `SlimmableContainer` submodels). Verified across `-0.0`, subnormals, and `FLT_MAX`.
+  This is dtype 0's contract. Dtype 1 has its own: every weight reads back as exactly the half nearest
+  `(float)x`, ties to even — checked against numpy.float16 and against a rounding by arithmetic, on every
+  half, every tie between two halves and its neighbours, and every weight of the real captures.
 - **Metadata/config preserved** verbatim — nested objects, `null`, unicode, big doubles, escapes.
 - **Deterministic** — `pack(x)` is byte-identical across runs and platforms (no compressor, so no
-  zlib/gzip header variation); the codec is idempotent (`pack(unpack(pack(x))) == pack(x)`).
+  zlib/gzip header variation); the codec is idempotent (`pack(unpack(pack(x))) == pack(x)`), with either
+  dtype. The half rounding is done on the bits, so no floating-point mode or hardware half support moves it.
 - **Robust** — `unpack`, `decode`, `readMeta` and `pack` never crash, hang or run out of memory on any
   input, the stack included: memory is linear in the input and bounded by the caps, and no walk recurses
-  deeper than 128. Every malformed `.namz` (bad magic, unknown version/codec/dtype, truncation at any byte,
+  deeper than 128. Every malformed `.namz`, of either dtype (bad magic, unknown version/codec/dtype,
+  truncation at any byte, a payload that is not `sum(lengths)` weights of the file's dtype,
   a lying `metaLen`, a huge `numArrays`, lengths whose sum overflows — a 32-bit `size_t` included — a
   placeholder that names no segment, a skeleton nested deeper than 128, a payload float that is NaN or
   infinite, a body over the output cap) is refused cleanly: `unpack` returns empty, `decode` nothing.
@@ -706,5 +762,6 @@ design). The reference reader/selector is `namz::rig`.
 ## Versioning
 
 `formatVersion`, `codec`, and `dtype` are single bytes with reserved values, so the format can grow
-without breaking old readers: a future `zstd` codec (2) or `float16` dtype (1) would bump those bytes, and
-a reader that doesn't understand them refuses cleanly rather than mis-decoding.
+without breaking old readers: the `float16` dtype (1) arrived this way in 4.4.0 without a new
+`formatVersion`, and a future `zstd` codec (2) would do the same. A reader that doesn't understand a byte
+value refuses the file cleanly rather than mis-decoding it — a 4.3.x reader refuses a `.nam16z`.

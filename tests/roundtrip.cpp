@@ -192,7 +192,8 @@ int main()
         CHECK (flip (0, 'X'), "flipped magic rejected");
         CHECK (flip (4, 3), "formatVersion 3 rejected");
         CHECK (flip (5, 1), "codec 1 (deflate reserved) rejected");
-        CHECK (flip (6, 1), "dtype 1 (f16) rejected");
+        CHECK (flip (6, 1), "dtype 1 on a float32 payload rejected (its 12 bytes are 6 halves, the lengths say 3)");
+        CHECK (flip (6, 2), "undefined dtype 2 rejected");
         CHECK (! namz::unpack (good.data(), good.size(), kCap).empty(), "control still unpacks");
 
         bool allEmptyOnTrunc = true;

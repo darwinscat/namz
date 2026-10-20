@@ -26,7 +26,12 @@ using json = nlohmann::json;
 using bytes = std::vector<std::uint8_t>;
 
 static int failures = 0, checks = 0;
-#define CHECK(cond, msg) do { ++checks; if (! (cond)) { ++failures; std::fprintf (stderr, "FAIL: %s\n", msg); } } while (0)
+static const char* gTag = "";   // " [f16]" while a section runs on float16 files
+#define CHECK(cond, msg) do { ++checks; if (! (cond)) { ++failures; std::fprintf (stderr, "FAIL%s: %s\n", gTag, msg); } } while (0)
+
+// The sections that read hostile bytes run on both payload types: a float32 file and a float16 one.
+static const namz::Dtype kDtypes[] = { namz::DtypeF32, namz::DtypeF16 };
+static const char* tagOf (namz::Dtype dt) { return dt == namz::DtypeF16 ? " [f16]" : ""; }
 
 // Every byte the program asks of operator new while `gCounting` is set — how a test sees WHEN a reader
 // allocates, not just whether it refuses.
@@ -61,10 +66,10 @@ static bytes fromHex (const char* h)
     return out;
 }
 
-static bytes packJson (const json& j, bool shuffle = true)
+static bytes packJson (const json& j, bool shuffle = true, namz::Dtype dtype = namz::DtypeF32)
 {
     auto s = j.dump();
-    namz::PackOptions o; o.shuffle = shuffle;
+    namz::PackOptions o; o.shuffle = shuffle; o.dtype = dtype;
     return namz::pack (s.data(), s.size(), o);
 }
 
@@ -99,17 +104,22 @@ static bool decodeAgrees (const std::uint8_t* data, std::size_t len)
 }
 static bool decodeAgrees (const bytes& b) { return decodeAgrees (b.data(), b.size()); }
 
-// A v2 container written by hand: any skeleton, any lengths, `payloadFloats` floats of payload — the
-// lengths need not sum to it, which is the point.
-static bytes craft (const std::string& skeleton, const std::vector<std::uint32_t>& lengths, std::size_t payloadFloats)
+// A v2 container written by hand: any skeleton, any lengths, `payloadFloats` weights of payload — the
+// lengths need not sum to it, which is the point. A float16 one (dtype 1) stores the halves 1 + (i % 1024) / 1024.
+static bytes craft (const std::string& skeleton, const std::vector<std::uint32_t>& lengths, std::size_t payloadFloats,
+                    namz::Dtype dtype = namz::DtypeF32)
 {
     auto u32 = [] (bytes& o, std::uint32_t v) { for (int k = 0; k < 4; ++k) o.push_back ((std::uint8_t) (v >> (8 * k))); };
-    bytes o { 'N', 'A', 'M', 'Z', 2, 0, 0, 0, 0, 0 };
+    bytes o { 'N', 'A', 'M', 'Z', 2, 0, (std::uint8_t) dtype, 0, 0, 0 };
     u32 (o, (std::uint32_t) skeleton.size());
     o.insert (o.end(), skeleton.begin(), skeleton.end());
     u32 (o, (std::uint32_t) lengths.size());
     for (auto l : lengths) u32 (o, l);
-    for (std::size_t i = 0; i < payloadFloats; ++i) { const float f = 0.5f + (float) i; const auto* fb = reinterpret_cast<const std::uint8_t*> (&f); o.insert (o.end(), fb, fb + 4); }
+    for (std::size_t i = 0; i < payloadFloats; ++i)
+    {
+        if (dtype == namz::DtypeF16) { const auto h = (std::uint16_t) (0x3C00u + (i & 0x3FFu)); o.push_back ((std::uint8_t) h); o.push_back ((std::uint8_t) (h >> 8)); continue; }
+        const float f = 0.5f + (float) i; const auto* fb = reinterpret_cast<const std::uint8_t*> (&f); o.insert (o.end(), fb, fb + 4);
+    }
     return o;
 }
 
@@ -157,18 +167,21 @@ int main()
     }
 
     // === 3) NO TRAILING SLACK — appending or dropping a single byte must break the exact-length check ===
+    for (const auto dt : kDtypes)
     {
+        gTag = tagOf (dt);
         for (int n : { 1, 7, 33, 250 })
         {
             std::vector<double> w (n);
             for (int i = 0; i < n; ++i) w[i] = std::sin (i * 0.7);
             json j; j["architecture"] = "X"; j["weights"] = w;
-            auto p = packJson (j, true);
+            auto p = packJson (j, true, dt);
             CHECK (! unpackToJson (p).is_null(), "slack: exact blob round-trips");
             auto plus = p; plus.push_back (0);
             CHECK (namz::unpack (plus.data(), plus.size(), kCap).empty(), "slack: +1 byte rejected");
             CHECK (namz::unpack (p.data(), p.size() - 1, kCap).empty(), "slack: -1 byte rejected");
         }
+        gTag = "";
     }
 
     // === 4) RANDOM float32 FUZZ — 100k finite floats, round-trip must be bit-exact ===
@@ -199,9 +212,11 @@ int main()
     }
 
     // === 5) BIT-FLIP FUZZ — arbitrary corruption must never crash/hang; only empty or a valid re-pack ===
+    for (const auto dt : kDtypes)
     {
+        gTag = tagOf (dt);
         auto good = packJson ([] { json j; j["architecture"] = "WaveNet";
-                                   j["weights"] = std::vector<double> { 0.1, -0.2, 0.3, 0.4, -0.5 }; return j; }(), true);
+                                   j["weights"] = std::vector<double> { 0.1, -0.2, 0.3, 0.4, -0.5 }; return j; }(), true, dt);
         std::mt19937_64 rng (0xBADF00Du);
         bool safe = true;
         for (int iter = 0; iter < 8000 && safe; ++iter)
@@ -223,11 +238,14 @@ int main()
             }
         }
         CHECK (safe, "bitflip: 8000 corruptions -> no crash, no garbage escapes (empty or valid JSON)");
+        gTag = "";
     }
 
     // === 6) HAND-CRAFTED MALICIOUS containers — lying lengths / counts / metaLen must be rejected ===
+    for (const auto dt : kDtypes)
     {
-        auto base = packJson ([] { json j; j["architecture"] = "X"; j["weights"] = std::vector<double> { 1, 2, 3 }; return j; }(), true);
+        gTag = tagOf (dt);
+        auto base = packJson ([] { json j; j["architecture"] = "X"; j["weights"] = std::vector<double> { 1, 2, 3 }; return j; }(), true, dt);
 
         auto corrupt = [&] (std::size_t off, std::uint32_t v) { auto m = base; if (off + 4 <= m.size()) { m[off] = v & 0xff; m[off + 1] = (v >> 8) & 0xff; m[off + 2] = (v >> 16) & 0xff; m[off + 3] = (v >> 24) & 0xff; } return namz::unpack (m.data(), m.size(), kCap).empty(); };
         CHECK (corrupt (10, 0xFFFFFFFFu), "crafted: absurd skeletonLen rejected");
@@ -239,7 +257,8 @@ int main()
         // a lying metaLen (v2 header, bytes 8..9) larger than the buffer.
         { auto m = base; m[8] = 0xff; m[9] = 0xff; CHECK (namz::unpack (m.data(), m.size(), kCap).empty(), "crafted: metaLen > buffer rejected"); }
 
-        // every version/codec/dtype byte value: only (ver 1 or 2, codec 0, dtype 0) may decode.
+        // every version/codec/dtype byte value: only (ver 1 or 2, codec 0, the file's own dtype) may decode —
+        // the other defined dtype reads the payload at the wrong width, so its length no longer fits.
         bool onlyValidAccepted = true;
         for (int v = 0; v < 256; ++v)
         {
@@ -248,7 +267,7 @@ int main()
             if (ok && (v == 0 || v > 2)) onlyValidAccepted = false;   // 0 and future versions must be refused
         }
         for (int c = 1; c < 256; ++c) { auto m = base; m[5] = (std::uint8_t) c; if (! namz::unpack (m.data(), m.size(), kCap).empty()) onlyValidAccepted = false; }
-        for (int d = 1; d < 256; ++d) { auto m = base; m[6] = (std::uint8_t) d; if (! namz::unpack (m.data(), m.size(), kCap).empty()) onlyValidAccepted = false; }
+        for (int d = 0; d < 256; ++d) { if (d == dt) continue; auto m = base; m[6] = (std::uint8_t) d; if (! namz::unpack (m.data(), m.size(), kCap).empty()) onlyValidAccepted = false; }
         CHECK (onlyValidAccepted, "crafted: unknown version/codec/dtype all refused");
 
         // tiny / degenerate buffers never crash
@@ -256,6 +275,7 @@ int main()
             (void) namz::unpack (base.data(), len, kCap);
         CHECK (namz::unpack (nullptr, 0, kCap).empty(), "crafted: null buffer -> empty");
         CHECK (namz::unpack (base.data(), 4, kCap).empty(), "crafted: magic-only -> empty");
+        gTag = "";
     }
 
     // === 7) v1 BACK-COMPAT — a formatVersion-1 blob (no meta block) still unpacks; readMeta empty ===
@@ -351,8 +371,11 @@ int main()
         CHECK (ok, "int-weights: JSON integers round-trip as float32");
     }
 
-    // === 13) DECODE vs UNPACK — the second reader refuses what the first refuses, everywhere ===
+    // === 13) DECODE vs UNPACK — the second reader refuses what the first refuses, everywhere, on float32 and
+    //         float16 files alike ===
+    for (const auto dt : kDtypes)
     {
+        gTag = tagOf (dt);
         // a container, both payload layouts, and its v1 spelling: truncated at EVERY offset, +1 byte
         json inner; inner["architecture"] = "WaveNet"; inner["config"] = { { "layers", 3 } };
         inner["weights"] = std::vector<double> { 0.5, -0.25, 3.0e-39, -0.0 };
@@ -361,7 +384,7 @@ int main()
         c["weights"] = std::vector<double> { 1.5, 2.5, -3.5 };
         for (bool shuffle : { true, false })
         {
-            const auto good = packJson (c, shuffle);
+            const auto good = packJson (c, shuffle, dt);
             bytes v1 (good.begin(), good.begin() + 4);
             v1.push_back (1); v1.push_back (good[5]); v1.push_back (good[6]); v1.push_back (good[7]);
             v1.insert (v1.end(), good.begin() + 10, good.end());
@@ -382,7 +405,7 @@ int main()
 
         // bit-flip fuzz: whatever corruption unpack survives or refuses, decode lands on the same verdict
         {
-            const auto good = packJson (c, true);
+            const auto good = packJson (c, true, dt);
             std::mt19937_64 rng (0x5EED5u);
             int disagreements = 0;
             for (int iter = 0; iter < 8000; ++iter)
@@ -398,7 +421,7 @@ int main()
 
         // hand-crafted: lying skeletonLen / numArrays / metaLen, every version/codec/dtype byte
         {
-            const auto base = packJson (c, true);
+            const auto base = packJson (c, true, dt);
             const std::uint32_t skLen = rdU32 (base, 10);
             bool agrees = true;
             for (std::size_t off : { (std::size_t) 10, (std::size_t) (14 + skLen), (std::size_t) (18 + skLen) })
@@ -424,7 +447,7 @@ int main()
             bool refused = true;
             for (const auto& lens : lying)
             {
-                const auto m = craft ("{\"weights\":0}", lens, 1);
+                const auto m = craft ("{\"weights\":0}", lens, 1, dt);
                 if (namz::decode (m.data(), m.size(), kMaxFloats).has_value() || ! namz::unpack (m.data(), m.size(), kCap).empty())
                     refused = false;
             }
@@ -437,11 +460,11 @@ int main()
             for (const char* sk : { "{\"weights\":1}", "{\"weights\":-1}", "{\"weights\":18446744073709551615}",
                                     "{\"a\":[{\"weights\":0},{\"weights\":5}]}" })
             {
-                const auto m = craft (sk, { 2u }, 2);
+                const auto m = craft (sk, { 2u }, 2, dt);
                 if (namz::decode (m.data(), m.size(), kMaxFloats).has_value() || ! namz::unpack (m.data(), m.size(), kCap).empty())
                     refused = false;
             }
-            const auto bad = craft ("{\"weights\":", { 1u }, 1);   // the skeleton is not JSON
+            const auto bad = craft ("{\"weights\":", { 1u }, 1, dt);   // the skeleton is not JSON
             CHECK (refused && ! namz::decode (bad.data(), bad.size(), kMaxFloats).has_value() && namz::unpack (bad.data(), bad.size(), kCap).empty(),
                    "decode: a placeholder naming no segment, or a skeleton that is not JSON -> refused by both");
         }
@@ -453,16 +476,16 @@ int main()
             std::string sk = "[";
             for (std::size_t i = 0; i < K; ++i) sk += (i ? ",{\"weights\":0}" : "{\"weights\":0}");
             sk += "]";
-            const auto bomb = craft (sk, { (std::uint32_t) len }, len);
+            const auto bomb = craft (sk, { (std::uint32_t) len }, len, dt);
             const auto ok = namz::decode (bomb.data(), bomb.size(), K * len);
             CHECK (ok.has_value() && ok->segments.size() == 1 && ok->segments[0].size() == len,
                    "decode: K placeholders on one segment decode at maxFloats == K * len, holding the segment once");
             CHECK (! namz::decode (bomb.data(), bomb.size(), K * len - 1).has_value(), "decode: one float short of K * len -> refused");
             CHECK (namz::unpack (bomb.data(), bomb.size(), bomb.size() * 10).empty(), "decode: (unpack refuses the same bomb by its JSON cap)");
-            const auto flat = craft ("{\"weights\":0}", { (std::uint32_t) len }, len);
+            const auto flat = craft ("{\"weights\":0}", { (std::uint32_t) len }, len, dt);
             CHECK (namz::decode (flat.data(), flat.size(), len).has_value() && ! namz::decode (flat.data(), flat.size(), len - 1).has_value(),
                    "decode: the stored floats are capped as well");
-            const auto unnamed = craft ("{\"a\":1}", { (std::uint32_t) len }, len);   // a segment nothing names
+            const auto unnamed = craft ("{\"a\":1}", { (std::uint32_t) len }, len, dt);   // a segment nothing names
             CHECK (decodeAgrees (unnamed) && ! namz::decode (unnamed.data(), unnamed.size(), len - 1).has_value(),
                    "decode: a segment no placeholder names still counts against the cap, and is accepted as unpack accepts it");
         }
@@ -474,12 +497,13 @@ int main()
             for (int i = 0; i < 90; ++i) { json w; w["child"] = deep; w["architecture"] = "N"; deep = w; }
             json many; many["architecture"] = "X"; many["list"] = json::array();
             for (int i = 0; i < 800; ++i) many["list"].push_back ({ { "weights", std::vector<double> { (double) i, -(double) i } } });
-            const auto pm = packJson (many, true);
+            const auto pm = packJson (many, true, dt);
             const auto dm = namz::decode (pm.data(), pm.size(), kMaxFloats);
-            CHECK (decodeAgrees (packJson (deep, true)) && decodeAgrees (pm) && dm.has_value() && dm->segments.size() == 800
+            CHECK (decodeAgrees (packJson (deep, true, dt)) && decodeAgrees (pm) && dm.has_value() && dm->segments.size() == 800
                    && dm->weightsOf (dm->skeleton["list"][799]) != nullptr && (*dm->weightsOf (dm->skeleton["list"][799]))[0] == 799.0f,
                    "decode: 90-level nesting and 800 arrays decode as they unpack");
         }
+        gTag = "";
     }
 
     // === 14) THE STATED RULES — placeholder edges, the depth limit, the cap before any allocation ===
@@ -606,6 +630,14 @@ int main()
             gCounting = false;
             if (gAllocated != 0) std::fprintf (stderr, "      (allocated %zu bytes before refusing)\n", gAllocated);
             CHECK (refused && gAllocated == 0, "decode: over the stored-floats cap -> refused before a single byte is allocated");
+            // the same with float16: the cap counts weights, whatever their width
+            const auto h = craft ("{\"weights\":0}", lens, 1, namz::DtypeF16);
+            gAllocated = 0;
+            gCounting = true;
+            const bool refusedF16 = ! namz::decode (h.data(), h.size(), 0).has_value();
+            gCounting = false;
+            if (gAllocated != 0) std::fprintf (stderr, "      (allocated %zu bytes before refusing)\n", gAllocated);
+            CHECK (refusedF16 && gAllocated == 0, "decode: over the stored-floats cap -> refused before a single byte is allocated [f16]");
         }
 
         // pack refuses a .nam in which a "weights" member holds an integer literal — it would be stored as a
@@ -645,6 +677,59 @@ int main()
             const auto meta = withMeta (craft ("{\"weights\":0}", { 1u }, 1), "{\"a\":" + nested (32000) + "}");   // near the u16 block's most
             CHECK (namz::readMeta (meta.data(), meta.size()).empty(), "depth: readMeta returns nothing for a meta block 32,001 deep, the stack intact");
         }
+    }
+
+    // === 15) FLOAT16 PAYLOADS — 2 bytes a weight, every half finite, both readers on one verdict ===
+    {
+        // a float16 container by hand: these halves, interleaved (low byte, high byte) or in two planes
+        auto craft16 = [] (const std::string& skeleton, const std::vector<std::uint32_t>& lengths,
+                           const std::vector<std::uint16_t>& halves, bool planes) {
+            bytes o = craft (skeleton, lengths, 0, namz::DtypeF16);
+            if (planes) o[7] = namz::FlagShuffle;
+            const std::size_t n = halves.size();
+            for (std::size_t i = 0; i < 2 * n; ++i)
+            {
+                const std::uint16_t h = planes ? halves[i % n] : halves[i / 2];
+                const bool high = planes ? i >= n : (i % 2) == 1;
+                o.push_back ((std::uint8_t) (high ? h >> 8 : h & 0xff));
+            }
+            return o;
+        };
+        bool refused = true, agrees = true;
+        for (const std::uint16_t bad : std::vector<std::uint16_t> { 0x7C00, 0xFC00, 0x7E00, 0x7C01, 0xFFFF })   // +-inf, NaNs
+            for (bool planes : { true, false })
+                for (const char* sk : { "{\"weights\":0}", "{\"weights\":1}", "{\"a\":1}" })   // named, unnamed, nothing named
+                {
+                    const auto m = craft16 (sk, { 2u, 1u }, { 0x3C00, 0x3800, bad }, planes);
+                    if (! namz::unpack (m.data(), m.size(), kCap).empty() || namz::decode (m.data(), m.size(), kMaxFloats).has_value()) refused = false;
+                    if (! decodeAgrees (m)) agrees = false;
+                }
+        CHECK (refused && agrees, "f16: a payload half that is infinite or NaN is refused by unpack and decode, named or not");
+
+        const auto edge = craft16 ("{\"weights\":0}", { 6u }, { 0x7BFF, 0xFBFF, 0x0001, 0x8001, 0x03FF, 0x8000 }, true);
+        const auto d = namz::decode (edge.data(), edge.size(), kMaxFloats);
+        CHECK (d && decodeAgrees (edge) && d->segments[0] == std::vector<float> ({ 65504.0f, -65504.0f, 5.9604644775390625e-08f,
+                                                                                  -5.9604644775390625e-08f, 6.0975551605224609e-05f, -0.0f })
+               && std::signbit (d->segments[0][5]),
+               "f16: the largest halves, the subnormals and -0 widen to their exact float32");
+
+        // the payload is lengths x 2 bytes: x 4 (a float32 reading), one byte more or less, are each refused
+        bool lengthsRule = true;
+        for (const std::size_t payloadBytes : { (std::size_t) 4, (std::size_t) 3, (std::size_t) 5, (std::size_t) 8, (std::size_t) 0 })
+        {
+            bytes m = craft ("{\"weights\":0}", { 2u }, 0, namz::DtypeF16);
+            for (std::size_t i = 0; i < payloadBytes; ++i) m.push_back (i % 2 ? 0x3C : 0x00);
+            const bool accepted = ! namz::unpack (m.data(), m.size(), kCap).empty();
+            if (accepted != (payloadBytes == 4) || ! decodeAgrees (m)) lengthsRule = false;
+        }
+        CHECK (lengthsRule, "f16: exactly lengths x 2 payload bytes are read; x 4, odd counts and short payloads are refused by both");
+
+        // no weights at all: a float16 file holds an empty payload, and reads back as its float32 twin does
+        json none; none["architecture"] = "X"; none["config"] = { { "k", 1 } };
+        const auto e16 = packJson (none, true, namz::DtypeF16), e32 = packJson (none, true);
+        CHECK (! e16.empty() && e16[6] == namz::DtypeF16 && decodeAgrees (e16)
+               && namz::unpack (e16.data(), e16.size(), kCap) == namz::unpack (e32.data(), e32.size(), kCap),
+               "f16: a .nam with no weights packs as F16 and reads back as the F32 pack does");
     }
 
     std::fprintf (stderr, "\n==== namz adversarial: %d checks, %d failures — %s ====\n",

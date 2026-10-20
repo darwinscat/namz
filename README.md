@@ -21,6 +21,8 @@ the raw JSON, and **bit-exact** to what the engine computes (zero quality loss).
   `unpack` + `json::parse` (native, Release).
 - **Cheap metadata** — a small header block (tone / device / gear / …) is readable **without** decoding
   the weights.
+- **Float16 on request** — `.nam16z`: the same container with each weight rounded to an IEEE half, for when
+  bytes matter more than the last bits (a web download). **Lossy**, so never the default — see below.
 
 The float bytes are byte-plane **shuffled** but not otherwise compressed (`codec = store`). The shuffle is
 free and helps whatever **outer** compressor sees the file (an installer's LZMA, git's packing); an inner
@@ -50,6 +52,23 @@ std::map<std::string,std::string> meta = namz::readMeta(packed.data(), packed.si
 // unpack back to .nam JSON (bit-exact float32); the size arg is a zip-bomb cap
 std::vector<uint8_t> back = namz::unpack(packed.data(), packed.size(), 256u*1024u*1024u);
 ```
+
+### Float16 — `.nam16z` (lossy, on request)
+
+```cpp
+namz::PackOptions opts;
+opts.dtype = namz::DtypeF16;           // each weight's float32 -> the nearest IEEE half (ties to even)
+std::vector<uint8_t> half = namz::pack(nam.data(), nam.size(), opts);   // empty: a |w| >= 65520 (rounds past 65504)
+```
+
+The payload halves: on the real captures a file is **0.55×** its float32 `.namz`, and **0.52×** after
+`brotli -q 11` (an IR-X pack of 54 captures: 2.64 MB → 1.37 MB). It is **lossy** — each weight moves by up
+to half a step of an 11-bit significand — so `pack` writes it only when `dtype` asks, and the file is
+conventionally named `.nam16z` so the loss shows in its name. The readers need no option: `unpack`,
+`decode` and `readMeta` go by the dtype byte in the file, never by its name, and widen each half to the
+float32 of the same value, exactly. The skeleton and the metadata are the same bytes as the float32 file's.
+The language ports and the conformance vectors read it from their next release; until then only the C++
+reference does.
 
 `pack`/`unpack`/`readMeta` are byte-in / byte-out — no JUCE, no framework — so the same header drops into
 a plugin, a tool, or a script.
@@ -90,16 +109,25 @@ The declarations in `namz.h` include `<nlohmann/json.hpp>`, so it must be on the
 that includes the header (the `namz::namz` CMake target carries it). Every such TU must see the **same**
 nlohmann/json, configured the same way (`JSON_DIAGNOSTICS` and the rest), as the TU that defines
 `NAMZ_IMPLEMENTATION`: `decode`'s mangled name carries no nlohmann type, so a mismatch is not a link error —
-it links silently against a `Decoded` of another layout.
+it links silently against a `Decoded` of another layout. For the same reason every such TU must see the
+**same version** of `namz.h` as that one: 4.4.0 added `PackOptions::dtype` and `pack`'s mangled name did
+not change, so an older header's `PackOptions` handed to a 4.4.0 `pack` is read past its end — a stray 1
+there would write float16 that nobody asked for.
 
 ## Use the CLI
 
 ```
 namz encode <in.nam> <out.namz> [--no-shuffle] [--set key=value ...]
-namz decode <in.namz> <out.nam>
-namz map    <in.namz> [--json]        # print the metadata header (no weight decode)
-namz verify <in.nam>                  # pack->unpack round-trip check + ratio
+namz encode <in.nam> <out.nam16z> --f16 [--no-shuffle] [--set key=value ...]   # float16, lossy
+namz decode <in.namz|in.nam16z> <out.nam>
+namz map    <in.namz|in.nam16z> [--json]   # print the metadata header (no weight decode)
+namz verify <in.nam> [--f16]          # pack->unpack round-trip check + ratio
 ```
+
+Float16 is asked for with `--f16`, and the name has to agree: `--f16` writes only a `*.nam16z`, and a
+`*.nam16z` is written only with `--f16` — either mismatch is refused before anything is read or written.
+The name never picks the dtype by itself. `verify --f16` also prints the largest change of any weight
+against the float32 pack.
 
 ```console
 $ namz encode amp.nam amp.namz --set gear_make="Two Notes" --set device="tube:1,pnp:1"
@@ -135,8 +163,8 @@ target_link_libraries(your_target PRIVATE namz::namz)   # header-only + nlohmann
 ## Format
 
 The wire format is small and documented in **[NAMZ-FORMAT.md](NAMZ-FORMAT.md)**. It carries a version and
-reserved codec/dtype bytes, so it can grow (e.g. a future `zstd` codec or `float16` dtype) without breaking
-old readers.
+codec/dtype bytes, so it can grow (a `float16` dtype, as of 4.4.0; e.g. a future `zstd` codec) without
+breaking old readers: a reader refuses a byte value it does not know.
 
 ## Language ports
 
