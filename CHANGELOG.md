@@ -6,6 +6,43 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.4.0] — 2026-10-20 — float16 weights, on request: `.nam16z`
+
+### Added
+- **The float16 dtype (dtype byte 1), written only on request.** `PackOptions::dtype = DtypeF16` stores
+  each weight as the IEEE half nearest its float32, round to nearest, ties to even, subnormals kept: half
+  the payload, and **lossy**. `pack` refuses a `.nam` (writes nothing) holding a weight whose half would
+  overflow (|w| ≥ 65520; up to there it rounds to 65504) or whose float32 is not finite. With the shuffle
+  flag the payload is 2 byte planes, every low byte then every high byte; a half is little-endian. The
+  skeleton and the meta block are the float32 file's bytes. On the real captures a file is 0.55× its
+  float32 `.namz`, 0.52× after `brotli -q 11` (an IR-X pack of 54 captures: 2.64 MB → 1.37 MB).
+- **`unpack` and `decode` read float16.** Each half widens to the float32 of the same value, exactly, into
+  `decode`'s segments and into what `unpack` prints. Every reader rule holds with a payload of
+  `sum(lengths) * 2` bytes, and the two readers keep one verdict — truncation at any byte, trailing
+  bytes, lengths that do not sum to the payload, a payload half that is infinite or NaN, the caps. A dtype
+  other than 0 and 1 is refused as before.
+- **The CLI writes and checks `.nam16z`.** `namz encode in.nam out.nam16z --f16`; the flag asks for float16
+  and the name must agree — `--f16` writes only a `*.nam16z`, a `*.nam16z` only with `--f16`, and either
+  mismatch is refused before anything is read. `decode` and `map` read either dtype (`map` notes a float16
+  file on stderr); `verify --f16` round-trips the float16 pack and prints the largest weight change against
+  float32.
+- NAMZ-FORMAT.md: the dtype table, "The float16 dtype (`.nam16z`)", the lossless contract stated as
+  float32's.
+- CLI refusals are tested whole — exit code, message, and no output file left — by `tests/cli-expect.cmake`.
+
+### Changed
+- **`namz verify` refuses an argument it does not know** (exit 2, usage on stderr); 4.3.1 ignored it.
+- **`namz encode` refuses an output named `.nam16z` without `--f16`** (exit 2, nothing written); 4.3.1 wrote
+  float32 under that name.
+
+### Unchanged
+- **Float32 stays the default and byte-identical to 4.3.1**: every golden and conformance vector, and the
+  encode and decode of 230 real captures, compared with the 4.3.1 CLI byte for byte.
+- The language ports and the conformance vectors follow in their own release; until then they refuse
+  dtype 1. The vector `bad-dtype` (a float32 file with dtype byte 1) is still refused by the reference, now
+  by the length rule; the next release rewords its stated reason.
+- **`NAMZ_VERSION` is 4.4.0**, and so is the CMake project.
+
 ## [4.3.1] — 2026-10-20 — one verdict, one set of bytes, in every reader
 
 ### Fixed
