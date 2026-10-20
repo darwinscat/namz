@@ -6,6 +6,67 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.3.0] — 2026-10-20 — a model loads without printing its weights
+
+### Added
+- **`namz::decode`** — a `.namz` read into what it holds: the skeleton parsed, each `"weights"` array
+  still the integer index the file stores, and the weights as one `std::vector<float>` per segment. Until
+  now the only reader was `unpack`, which un-shuffles the floats and then PRINTS every one of them as
+  decimal text, for the loader to parse straight back into the floats it already had. On a real
+  14,017-float capture that round trip is 2.3 ms natively (0.8 ms to print, 1.5 ms to parse) against
+  0.03 ms for `decode`, and about 11 ms in a wasm build, where a browser's AudioWorklet runs it on the
+  audio thread.
+  - **`Decoded::weightsOf (node)`** — the segment a model's placeholder names: the skeleton's own for a
+    plain model, `config.submodels[i].model`'s for each model of a SlimmableContainer. A loader building
+    the network itself needs nothing else from the file, and nothing from namz's internals.
+  - **`Decoded::refill (node)`** — a subtree back as `.nam` JSON, for a loader that wants one. The whole
+    skeleton refilled and dumped is byte for byte what `unpack` returns, for every conformance vector
+    and every real capture measured.
+  - It refuses exactly what `unpack` refuses — bad magic, an unknown version, codec or dtype, truncation
+    at any byte, trailing bytes, lengths that do not sum to the payload, a skeleton that is not JSON, a
+    placeholder naming no segment — and the tests hold the two readers to one verdict on every
+    truncation, 8,000 bit-flipped files, and every header byte.
+  - **The cap is counted in floats**, because no JSON is produced to measure: `maxFloats` bounds the
+    floats the file stores — what `decode` itself allocates — and the floats its placeholders name, a
+    segment named twice counted twice. Duplicate placeholders are the one way a small file asks for a
+    large model, and the zip bomb `unpack`'s `maxJsonBytes` stops by the size of the text it would print.
+    The stored floats meet the cap before anything at all is allocated; the named ones once the skeleton
+    is parsed, before a single float is.
+- **`namz::kMaxDepth`** — 128, the deepest any JSON in a `.namz` may nest; see Fixed.
+
+### Changed
+- **A file that includes `namz.h` needs nlohmann/json on its include path.** The declarations include
+  `<nlohmann/json.hpp>`, because `decode` hands out a parsed skeleton. The implementation always needed it
+  and the `namz::namz` target always carried it, so a build through that target changes nothing. Every
+  translation unit must see the same nlohmann, configured the same way, as the one that defines
+  `NAMZ_IMPLEMENTATION`: `decode`'s mangled name carries no nlohmann type, so a mismatch links silently.
+
+### Fixed
+- **A 32-bit `size_t` could wrap the length sum.** `unpack` added up the u32 segment lengths in a
+  `size_t`; where that is 32 bits wide — wasm32, armv7 — lengths such as `{2, 0xFFFFFFFF}` wrap back onto
+  a one-float payload, pass the exact-length check, and slice far past the buffer: a heap over-read,
+  caught by AddressSanitizer on wasm32. Each addition is now checked, and `decode` checks every length
+  against what is left of the payload. A 64-bit build never met it; a file that did not lie never did. A
+  new CI row runs every suite as wasm32 under AddressSanitizer, where the over-read shows.
+- **A skeleton nested deep enough overflowed the stack.** `unpack`'s walk over the skeleton, `pack`'s over
+  a `.nam` and nlohmann's print all recurse, a frame per level: a 200 KB skeleton of 100,000 nested arrays
+  crashed `unpack` with SIGSEGV, `pack` crashed on the same `.nam`, and `readMeta`, whose block is capped at
+  64 KB, crashed on a meta block 8,000 deep on a 512 KB stack. Depth is now limited to **128**
+  (`namz::kMaxDepth`; a scalar is 0, an array or object 1 + its deepest member), measured without recursion
+  right after parsing: `unpack` and `decode` refuse a deeper skeleton, `pack` a deeper `.nam`, and
+  `readMeta` reads a deeper meta block as no metadata. Real captures nest about 10 deep, the deepest
+  conformance input 6. A limit rather than an iterative rewrite, because the walks namz does not own —
+  nlohmann's print and compare, a loader's model builder — recurse just the same, and one stated number
+  covers them all. NAMZ-FORMAT.md states it, with the exact rule for what a placeholder is.
+- **`NAMZ_VERSION_MAJOR` / `_MINOR` / `_PATCH` said 3.3.0** while `NAMZ_VERSION` walked to 4.2.0 — the
+  macros stayed at 3.3.0 when the string moved to 4.0.0. All four say 4.3.0, and so does the CMake project; the round-trip
+  test now holds the macros, the string and the project to one version.
+
+The language ports (`js/`, `python/`, `swift/`) version independently and are untouched: this release is
+the C++ reference only. The wire format, the rig schema and the conformance vectors do not change. The
+depth limit and the exact placeholder rule are the C++ reference's alone until the ports and new
+conformance vectors follow.
+
 ## [4.2.0] — 2026-10-17 — a file says how it was trained
 
 ### Added

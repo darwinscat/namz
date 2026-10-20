@@ -10,8 +10,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using json = nlohmann::json;
@@ -220,6 +223,147 @@ int main()
         json odd; odd["weights"] = "not-an-array"; odd["also"] = json::object ({ { "weights", json::object() } });
         s = odd.dump(); p = namz::pack (s.data(), s.size());
         CHECK (! p.empty() && unpackToJson (p) == odd, "non-numeric \"weights\" survive verbatim");
+    }
+
+    // 8) decode — what a model builder gets: the skeleton parsed, each placeholder an index, the weights as
+    //    float32 vectors that are the input's floats bit for bit; refilled, unpack's exact bytes.
+    {
+        const float fmax = std::numeric_limits<float>::max(), fmin = std::numeric_limits<float>::min();
+        const float tiny = std::numeric_limits<float>::denorm_min();
+        const std::vector<double> top { 0.1, -0.0, (double) fmax, (double) -fmin, (double) tiny, 1.0 / 3.0 };
+        const std::vector<double> nested { -0.25, 0.7, (double) -tiny, 123456.789 };
+        const json nam = makeNam (top, nested);
+        auto bitsEqual = [] (const std::vector<float>* got, const std::vector<double>& want)
+        {
+            if (got == nullptr || got->size() != want.size()) return false;
+            for (std::size_t i = 0; i < want.size(); ++i)
+            {
+                const float w = (float) want[i];
+                if (std::memcmp (&(*got)[i], &w, 4) != 0) return false;
+            }
+            return true;
+        };
+
+        for (bool shuffle : { true, false })
+        {
+            const auto p = packJson (nam, shuffle);
+            const auto d = namz::decode (p.data(), p.size(), kCap);
+            CHECK (d.has_value(), "decode: a container decodes");
+            if (! d) continue;
+            const json& s = d->skeleton;
+            CHECK (s["version"] == "0.7.0" && s["architecture"] == "SlimmableContainer" && s["sample_rate"] == 48000,
+                   "decode: top-level version / architecture / sample_rate as the .nam had them");
+            CHECK (s["metadata"] == nam["metadata"], "decode: metadata verbatim (null, unicode, big double)");
+            CHECK (d->segments.size() == 2, "decode: one segment per weights array");
+            CHECK (s["weights"].is_number_integer() && s["config"]["submodels"][0]["model"]["weights"].is_number_integer(),
+                   "decode: each weights array is an integer placeholder in the skeleton");
+            CHECK (bitsEqual (d->weightsOf (s), top), "decode: the top-level weights, bit for bit (-0, FLT_MAX, subnormal)");
+            const json& sub = s["config"]["submodels"][0];
+            CHECK (sub["max_value"] == 0.5 && sub["model"]["config"] == nam["config"]["submodels"][0]["model"]["config"],
+                   "decode: a submodel's max_value and config as the .nam had them");
+            CHECK (bitsEqual (d->weightsOf (sub["model"]), nested), "decode: a submodel's weights, bit for bit");
+            CHECK (d->weightsOf (s["config"]) == nullptr && d->weightsOf (sub) == nullptr
+                   && d->weightsOf (json (0)) == nullptr && d->weightsOf (json::object ({ { "weights", 0.5 } })) == nullptr,
+                   "decode: weightsOf is nullptr where no placeholder sits");
+            CHECK (d->weightsOf (json::object ({ { "weights", 2 } })) == nullptr
+                   && d->weightsOf (json::object ({ { "weights", -1 } })) == nullptr,
+                   "decode: weightsOf is nullptr for a placeholder naming no segment");
+
+            json cfg = s["config"];
+            CHECK (d->refill (cfg) && cfg == unpackToJson (p)["config"], "decode: refill of one subtree is unpack's subtree");
+            json whole = s;
+            CHECK (d->refill (whole), "decode: refill of the whole skeleton succeeds");
+            const auto dumped = whole.dump();
+            CHECK (std::vector<std::uint8_t> (dumped.begin(), dumped.end()) == namz::unpack (p.data(), p.size(), kCap),
+                   "decode: refill + dump is unpack's exact bytes");
+            json foreign = json::object ({ { "weights", 7 } });
+            CHECK (! d->refill (foreign), "decode: refill refuses a placeholder naming no segment");
+        }
+
+        // the cap counts floats: exactly enough decodes, one short refuses; no weights needs no floats
+        {
+            const auto p = packJson (nam);
+            const std::size_t total = top.size() + nested.size();
+            CHECK (namz::decode (p.data(), p.size(), total).has_value(), "decode: maxFloats == the floats held decodes");
+            CHECK (! namz::decode (p.data(), p.size(), total - 1).has_value(), "decode: maxFloats one short refuses");
+            json noW; noW["architecture"] = "LSTM";
+            const auto q = packJson (noW);
+            const auto dq = namz::decode (q.data(), q.size(), 0);
+            CHECK (dq.has_value() && dq->skeleton == noW && dq->segments.empty(), "decode: a .nam with NO weights needs no floats");
+        }
+
+        // degenerate top-levels decode to themselves, as unpack's do
+        for (const char* lit : { "{}", "[]", "[1,2,3]", "\"hi\"", "42", "null", "true" })
+        {
+            const auto q = namz::pack (lit, std::strlen (lit));
+            const auto dq = namz::decode (q.data(), q.size(), kCap);
+            CHECK (dq.has_value() && dq->skeleton == json::parse (lit) && dq->segments.empty(), "decode: degenerate top-level decodes");
+        }
+
+        // an empty weights array is a segment of its own, empty
+        {
+            json e; e["architecture"] = "X"; e["weights"] = json::array();
+            const auto q = packJson (e);
+            const auto dq = namz::decode (q.data(), q.size(), kCap);
+            CHECK (dq.has_value() && dq->segments.size() == 1 && dq->weightsOf (dq->skeleton) != nullptr
+                   && dq->weightsOf (dq->skeleton)->empty(), "decode: an empty weights array is an empty segment");
+        }
+    }
+
+    // 9) the version the header states is one version: the macros, the string, and the CMake project
+    {
+        const std::string fromMacros = std::to_string (NAMZ_VERSION_MAJOR) + "." + std::to_string (NAMZ_VERSION_MINOR)
+                                     + "." + std::to_string (NAMZ_VERSION_PATCH);
+        CHECK (fromMacros == NAMZ_VERSION, "version: NAMZ_VERSION_MAJOR/MINOR/PATCH spell NAMZ_VERSION");
+#ifdef NAMZ_PROJECT_VERSION
+        CHECK (std::string (NAMZ_PROJECT_VERSION) == NAMZ_VERSION, "version: NAMZ_VERSION is the CMake project's version");
+#endif
+    }
+
+    // 10) the README's decode snippet, verbatim, runs on a plain model and on a container alike: it builds the
+    //     plain model from its own weights and each submodel from its own, and never steps off the skeleton
+    {
+        json plain = makeFlat ({ 0.5, -0.25, 1.0 / 3.0 });
+        plain["config"] = { { "layers", 2 } };
+        const json container = makeNam ({ 1.5, 2.5 }, { -0.25, 0.7, 0.125 });
+
+        std::vector<std::pair<json, std::vector<float>>> built;
+        auto build = [&] (const nlohmann::json& config, const std::vector<float>& weights) { built.emplace_back (config, weights); };
+        json refilledConfig;
+        auto readme = [&] (const std::vector<std::uint8_t>& packed)
+        {
+            // ---- README.md, "Load a model without printing its weights" — verbatim ----
+// the size arg is a zip-bomb cap in floats: what the file stores, and what its placeholders name
+std::optional<namz::Decoded> d = namz::decode(packed.data(), packed.size(), 16u*1024u*1024u);
+if (!d) return;                                         // refused: exactly what unpack refuses
+
+const nlohmann::json& m = d->skeleton;                  // version, architecture, config, metadata, sample_rate
+if (m.value("architecture", "") == "SlimmableContainer")
+{
+    for (const auto& sub : m.at("config").at("submodels"))   // each submodel: its own config and weights
+        if (const std::vector<float>* w = d->weightsOf(sub.at("model")))
+            build(sub.at("model").at("config"), *w);
+}
+else if (const std::vector<float>* w = d->weightsOf(m))     // a plain model; nullptr: it holds no weights
+{
+    build(m.at("config"), *w);
+}
+
+nlohmann::json cfg = m.at("config");                    // .at, not []: [] on a const json is UB for a missing key
+d->refill(cfg);                                         // a subtree as .nam JSON, if a loader wants one
+            // ---- end of the README snippet ----
+            refilledConfig = cfg;
+        };
+
+        readme (packJson (plain));
+        CHECK (built.size() == 1 && built[0].first == plain["config"] && built[0].second == std::vector<float> ({ 0.5f, -0.25f, (float) (1.0 / 3.0) })
+               && refilledConfig == plain["config"], "README snippet: a plain model is built from its config and its weights");
+        built.clear();
+        const auto packedContainer = packJson (container);
+        readme (packedContainer);
+        CHECK (built.size() == 1 && built[0].first == container["config"]["submodels"][0]["model"]["config"]
+               && built[0].second == std::vector<float> ({ -0.25f, 0.7f, 0.125f })
+               && refilledConfig == unpackToJson (packedContainer)["config"], "README snippet: a container builds each submodel from its own config and weights");
     }
 
     std::fprintf (stderr, "\n==== namz tests: %d checks, %d failures — %s ====\n",

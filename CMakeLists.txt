@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 cmake_minimum_required(VERSION 3.14)
-project(namz VERSION 4.2.0 LANGUAGES CXX)
+project(namz VERSION 4.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,6 +47,7 @@ if(NAMZ_BUILD_TESTS)
   enable_testing()
   add_executable(namz_test tests/roundtrip.cpp)
   target_link_libraries(namz_test PRIVATE namz::namz)
+  target_compile_definitions(namz_test PRIVATE NAMZ_PROJECT_VERSION="${PROJECT_VERSION}")   # the header must state it
   add_test(NAME namz_roundtrip COMMAND namz_test)
 
   add_executable(namz_test_adversarial tests/adversarial.cpp)

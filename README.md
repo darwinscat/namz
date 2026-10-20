@@ -15,7 +15,10 @@ the raw JSON, and **bit-exact** to what the engine computes (zero quality loss).
 - **Deterministic** — the output is byte-identical run-to-run and across platforms (no compressor, no
   timestamps), so packed files are safe to commit to git.
 - **Dependency-light** — one header, C++17 std + [nlohmann/json](https://github.com/nlohmann/json). No zlib.
-- **Fast to load** — no decompression; just un-shuffle bytes and re-emit JSON.
+- **Fast to load** — no decompression. `unpack` un-shuffles the bytes and re-emits the `.nam` JSON for
+  anything that takes a `.nam`; `decode` skips the text altogether and hands a loader the parsed skeleton
+  and the weights as `std::vector<float>` — on a real 14,017-float capture **0.03 ms against 2.3 ms** for
+  `unpack` + `json::parse` (native, Release).
 - **Cheap metadata** — a small header block (tone / device / gear / …) is readable **without** decoding
   the weights.
 
@@ -50,6 +53,44 @@ std::vector<uint8_t> back = namz::unpack(packed.data(), packed.size(), 256u*1024
 
 `pack`/`unpack`/`readMeta` are byte-in / byte-out — no JUCE, no framework — so the same header drops into
 a plugin, a tool, or a script.
+
+### Load a model without printing its weights
+
+`unpack` writes every weight back out as decimal text, and a NAM loader then parses that text straight
+back into the floats the file already held. A loader that builds its model itself can skip the round
+trip: `decode` hands it the skeleton already parsed — the `.nam` with each `"weights"` array replaced by
+the integer index of its segment — and the weights as `std::vector<float>`, the type NAM's engine takes.
+
+```cpp
+// the size arg is a zip-bomb cap in floats: what the file stores, and what its placeholders name
+std::optional<namz::Decoded> d = namz::decode(packed.data(), packed.size(), 16u*1024u*1024u);
+if (!d) return;                                         // refused: exactly what unpack refuses
+
+const nlohmann::json& m = d->skeleton;                  // version, architecture, config, metadata, sample_rate
+if (m.value("architecture", "") == "SlimmableContainer")
+{
+    for (const auto& sub : m.at("config").at("submodels"))   // each submodel: its own config and weights
+        if (const std::vector<float>* w = d->weightsOf(sub.at("model")))
+            build(sub.at("model").at("config"), *w);
+}
+else if (const std::vector<float>* w = d->weightsOf(m))     // a plain model; nullptr: it holds no weights
+{
+    build(m.at("config"), *w);
+}
+
+nlohmann::json cfg = m.at("config");                    // .at, not []: [] on a const json is UB for a missing key
+d->refill(cfg);                                         // a subtree as .nam JSON, if a loader wants one
+```
+
+Refilled whole and dumped, the skeleton is byte for byte what `unpack` returns. Both readers refuse a
+skeleton nested deeper than 128 (`namz::kMaxDepth`; real captures nest about 10 deep), so a loader's own
+recursive walk over it stays shallow.
+
+The declarations in `namz.h` include `<nlohmann/json.hpp>`, so it must be on the include path of every TU
+that includes the header (the `namz::namz` CMake target carries it). Every such TU must see the **same**
+nlohmann/json, configured the same way (`JSON_DIAGNOSTICS` and the rest), as the TU that defines
+`NAMZ_IMPLEMENTATION`: `decode`'s mangled name carries no nlohmann type, so a mismatch is not a link error —
+it links silently against a `Decoded` of another layout.
 
 ## Use the CLI
 
