@@ -6,6 +6,7 @@
 # Emits, relative to this file's directory:
 #   vectors/<name>.nam   valid input
 #   vectors/<name>.namz  reference output (from the CLI) — a port's encode must byte-match this
+#   vectors/<name>.nam16z  the same, packed as float16 (dtype 1, the CLI's --f16)
 #   invalid/<name>.namz  malformed — a port's decode must reject it (error, never crash)
 #   decode-only/<name>.namz + .nam  a .namz pack never writes, and the exact .nam the reference decodes it to
 #   invalid/<name>.nam   a .nam a port's encode must refuse
@@ -102,6 +103,34 @@ valid = [
                         b'"architecture":"X","weights":[0.5]}',                                            {"shuffle": True}),
 ]
 
+# ---- float16 (dtype 1, NAMZ-FORMAT.md "The float16 dtype"): pack writes it only when asked, so each case says
+# "dtype": 1 and its golden is a .nam16z. Every weight reads back as the half nearest its float32, ties to even.
+H24 = 2.0 ** -24                           # the smallest half subnormal, and the step of every subnormal
+F16_PLAIN = [0.5, -0.5, 0.25, f32(0.1), f32(-0.2), f32(1.0 / 3.0), f32(2.65), 100.0]
+valid += [
+    ("f16-flat",            {"architecture": "WaveNet", "weights": F16_PLAIN},                          {"shuffle": True, "dtype": 1}),
+    ("f16-flat-noshuffle",  {"architecture": "WaveNet", "weights": F16_PLAIN},                          {"shuffle": False, "dtype": 1}),
+    # submodels in sorted-key order, the meta block and the skeleton: the float32 file's bytes, dtype aside
+    ("f16-nested",          {"architecture": "SlimmableContainer", "sample_rate": 48000,
+                             "config": {"submodels": [
+                                 {"max_value": 0.5, "model": {"architecture": "WaveNet", "weights": [f32(0.1), -0.25, 12.5]}},
+                                 {"max_value": 1.0, "model": {"architecture": "LSTM", "weights": [f32(0.3), f32(-0.7)]}}]},
+                             "weights": [1.0, -1.0]},
+                            {"shuffle": True, "dtype": 1, "set": {"tone_type": "clean", "gear_make": "Two Notes"}}),
+    # the subnormal halves: steps of 2^-24, ties to even, 2^-25 a tie to a zero that keeps its sign, below it zero
+    ("f16-subnormals",      {"architecture": "X", "weights": [
+                                H24, -H24, 2.0 ** -25, -(2.0 ** -25), f32(2.0 ** -25 * (1 + 2.0 ** -23)),
+                                1.5 * H24, 2.5 * H24, 0.75 * H24, 1023 * H24, 1023.5 * H24, 2.0 ** -14,
+                                f32(1e-5), f32(-3e-6), f32(1e-8), -f32(1e-8), f32(SUBNORMAL), -f32(SUBNORMAL),
+                                f32(MIN_NORMAL)]},                                                       {"shuffle": True, "dtype": 1}),
+    # signed zeros, the top of the range (65519 and the float32 below 65520 round to 65504), ties to even in a
+    # normal binade, a carry out of the mantissa into the exponent (2047.5 -> 2048), integer literals
+    ("f16-edges",           b'{"architecture":"X","weights":[0.0,-0.0,0,65504.0,-65504.0,65519,65519.99609375,'
+                            b'-65519.99609375,1.0,-1.0,1.00048828125,1.00146484375,2047.5,2049,2051,-2051]}',
+                                                                                                         {"shuffle": False, "dtype": 1}),
+    ("f16-empty-weights",   {"architecture": "X", "weights": []},                                       {"shuffle": True, "dtype": 1}),
+]
+
 def run(args):
     r = subprocess.run(args, capture_output=True, text=True)
     if r.returncode != 0:
@@ -119,14 +148,18 @@ def cli_accepts(args):
     sys.exit("the reference neither did nor refused: %s\nexit %d\n%s" % (" ".join(args), r.returncode, r.stderr))
 
 manifest = {"format": "namz", "note": "Cross-language conformance vectors. Encode a valid input with the "
-            "given options and it must BYTE-MATCH the .namz; decode the .namz and the weights must be "
-            "bit-exact float32. Every invalid .namz must be rejected (empty/error, never crash). Decode each "
-            "decodeOnly .namz and it must BYTE-MATCH its .nam. Encode each invalidNam .nam and it must be refused.",
+            "given options (shuffle, set, dtype: 0 float32, 1 float16) and it must BYTE-MATCH the output; decode "
+            "the output and the weights must be bit-exact float32 — for dtype 1, the half nearest each input "
+            "float32 (ties to even), widened. Every invalid .namz must be rejected (empty/error, never crash). Decode each "
+            "decodeOnly .namz and it must BYTE-MATCH its .nam. Encode each invalidNam .nam with its dtype and it "
+            "must be refused.",
             "valid": [], "invalid": [], "decodeOnly": [], "invalidNam": []}
 
 for name, obj, opts in valid:
+    dtype = opts.get("dtype", 0)
+    ext = ".nam16z" if dtype == 1 else ".namz"   # the CLI holds a float16 file to this name
     nam = os.path.join(VEC, name + ".nam")
-    out = os.path.join(VEC, name + ".namz")
+    out = os.path.join(VEC, name + ext)
     if isinstance(obj, bytes):
         with open(nam, "wb") as f:
             f.write(obj)
@@ -134,14 +167,16 @@ for name, obj, opts in valid:
         with open(nam, "w") as f:
             json.dump(obj, f, separators=(",", ":"))
     args = [CLI, "encode", nam, out]
+    if dtype == 1:
+        args.append("--f16")
     if not opts.get("shuffle", True):
         args.append("--no-shuffle")
     for k, v in opts.get("set", {}).items():
         args += ["--set", "%s=%s" % (k, v)]
     run(args)
     manifest["valid"].append({"name": name, "input": "vectors/%s.nam" % name,
-                              "output": "vectors/%s.namz" % name,
-                              "shuffle": opts.get("shuffle", True), "set": opts.get("set", {})})
+                              "output": "vectors/%s%s" % (name, ext),
+                              "shuffle": opts.get("shuffle", True), "set": opts.get("set", {}), "dtype": dtype})
 
 # ---- invalid cases: derive from a valid blob so they're realistic ------------------------------------
 base = open(os.path.join(VEC, "flat.namz"), "rb").read()
@@ -181,17 +216,25 @@ def write_decode_only(name, blob, why, expect=None):
                                    "output": "decode-only/%s.nam" % name, "why": why})
 
 
-def write_invalid_nam(name, text, why):
+def write_invalid_nam(name, text, why, dtype=0):
+    """With dtype 1 the .nam must be one the float32 pack takes, so the refusal is float16's own."""
     path = os.path.join(INV, name + ".nam")
     open(path, "wb").write(text)
-    if cli_accepts([CLI, "encode", path, os.path.join(TMP, name + ".namz")]):
+    if dtype == 1:
+        if not cli_accepts([CLI, "encode", path, os.path.join(TMP, name + ".namz")]):
+            sys.exit("the reference refuses invalid/%s.nam as float32 too — not float16's refusal: %s" % (name, why))
+        if cli_accepts([CLI, "encode", path, os.path.join(TMP, name + ".nam16z"), "--f16"]):
+            sys.exit("the reference encodes invalid/%s.nam as float16 — it must refuse it: %s" % (name, why))
+    elif cli_accepts([CLI, "encode", path, os.path.join(TMP, name + ".namz")]):
         sys.exit("the reference encodes invalid/%s.nam — it must refuse it: %s" % (name, why))
-    manifest["invalidNam"].append({"name": name, "file": "invalid/%s.nam" % name, "why": why})
+    manifest["invalidNam"].append({"name": name, "file": "invalid/%s.nam" % name, "why": why, "dtype": dtype})
 
 write_invalid("bad-magic",     b"XAMZ" + base[4:],                    "magic corrupted")
 write_invalid("bad-version",   base[:4] + bytes([9]) + base[5:],      "formatVersion 9 (> 2) must be refused")
 write_invalid("bad-codec",     base[:5] + bytes([1]) + base[6:],      "codec 1 (deflate, reserved) must be refused")
-write_invalid("bad-dtype",     base[:6] + bytes([1]) + base[7:],      "dtype 1 (float16, reserved) must be refused")
+write_invalid("bad-dtype",     base[:6] + bytes([1]) + base[7:],
+              "dtype 1 (float16) on a float32 file: as halves its 12-byte payload is twice the 3 weights its "
+              "lengths ask, so the length rule refuses it (dtype 2 and up are unknown: bad-dtype-2)")
 write_invalid("truncated",     base[:len(base) - 3],                  "body truncated — exact-length check must reject")
 write_invalid("trailing-junk", base + b"junk",                        "extra bytes — exact-length check must reject")
 write_invalid("lying-metalen", base[:8] + b"\xff\xff" + base[10:],    "metaLen far bigger than the buffer")
@@ -260,6 +303,77 @@ write_decode_only("float-digits",
                   b'{"weights":[0.25895649194717407,-0.25354045629501343,-198.70986938476563,'
                   b'1.125899906842624e+15,0.17340469360351563]}')
 
+# ---- float16 (dtype 1): what a reader takes and refuses ------------------------------------------------
+def craft16(skeleton, lengths, halves, shuffle, version=2, dtype=1):
+    """A float16 .namz written by hand: `halves` (each a half's 16 bits) as the payload, low byte first, or
+    every low byte then every high byte when `shuffle`. The lengths need not sum to it."""
+    out = b"NAMZ" + bytes([version, 0, dtype, 1 if shuffle else 0]) + (b"\0\0" if version >= 2 else b"")
+    out += struct.pack("<I", len(skeleton)) + skeleton
+    out += struct.pack("<I", len(lengths)) + b"".join(struct.pack("<I", n) for n in lengths)
+    if shuffle:
+        return out + bytes(h & 0xFF for h in halves) + bytes(h >> 8 for h in halves)
+    return out + b"".join(struct.pack("<H", h) for h in halves)
+
+
+def printed(x):
+    """A widened half as the reference prints it: nlohmann's layout of the shortest digits — fixed while the
+    point sits within 15 digits of the first one, else d.ddde±XX. A half has 11 significant bits, few enough
+    that Grisu2's digits are the shortest ones; generation stops if the CLI prints anything else."""
+    if x == 0:
+        return "-0.0" if math.copysign(1.0, x) < 0 else "0.0"
+    sign, digits, exp = __import__("decimal").Decimal(repr(abs(x))).normalize().as_tuple()
+    d = "".join(map(str, digits))
+    k, n = len(d), len(d) + exp
+    if k <= n <= 15:
+        body = d + "0" * (n - k) + ".0"
+    elif 0 < n <= 15:
+        body = d[:n] + "." + d[n:]
+    elif -4 < n <= 0:
+        body = "0." + "0" * -n + d
+    else:
+        e = n - 1
+        body = (d if k == 1 else d[0] + "." + d[1:]) + "e" + ("-" if e < 0 else "+") + "%02d" % abs(e)
+    return ("-" if x < 0 else "") + body
+
+
+def widened(h):
+    return struct.unpack("<e", struct.pack("<H", h))[0]
+
+
+# Two segments, so a reader that slices the planes per segment instead of across the whole payload misreads
+# them: ±0, the subnormals (2^-24 steps, the largest 0x03FF), the smallest normals, ordinary values, 65504.
+F16_TOP = [0x0000, 0x8000, 0x0001, 0x8001, 0x0002, 0x0003, 0x0155, 0x0200, 0x02AA, 0x03FF, 0x83FF, 0x0400,
+           0x0401, 0x07FF, 0x0800]
+F16_A   = [0x2E66, 0x3555, 0x3BFF, 0x3C00, 0x3C01, 0xBC00, 0x5640, 0x7800, 0x7BFE, 0x7BFF, 0xFBFF]
+F16_SK  = b'{"a":{"weights":1},"weights":0}'
+F16_NAM = ('{"a":{"weights":[%s]},"weights":[%s]}' % (",".join(printed(widened(h)) for h in F16_A),
+                                                      ",".join(printed(widened(h)) for h in F16_TOP))).encode()
+for shuffle in (True, False):
+    write_decode_only("f16-widen" if shuffle else "f16-widen-noshuffle",
+                      craft16(F16_SK, [len(F16_TOP), len(F16_A)], F16_TOP + F16_A, shuffle),
+                      "float16 halves (%s) widen to the float32 of the same value, printed with the reference's "
+                      "digits: signed zeros, subnormals, the smallest normals, 65504; two segments, so the planes "
+                      "run across the whole payload" % ("2 byte planes" if shuffle else "low byte first"), F16_NAM)
+write_decode_only("f16-version-1", craft16(ONE, [2], [0x3C00, 0x8001], False, version=1),
+                  "formatVersion 1 with dtype 1: no metadata length, float16 payload",
+                  ('{"weights":[1.0,%s]}' % printed(widened(0x8001))).encode())
+
+f16 = open(os.path.join(VEC, "f16-flat.nam16z"), "rb").read()   # 8 halves, 2 byte planes
+write_invalid("bad-dtype-2",     f16[:6] + bytes([2]) + f16[7:],
+              "dtype 2: no such dtype — the payload would fit its lengths as halves, so only the dtype refuses it")
+write_invalid("f16-as-float32",  f16[:6] + bytes([0]) + f16[7:],
+              "a float16 file with dtype 0: as float32 its 16-byte payload holds 4 of the 8 weights its lengths ask")
+write_invalid("f16-truncated",   f16[:-1],
+              "a float16 payload one byte short: an odd length is no whole number of halves")
+write_invalid("f16-trailing-half", f16 + b"\x00\x3c",
+              "one half more than the lengths ask: a float16 payload is exactly sum(lengths) * 2 bytes")
+write_invalid("f16-short-lengths", craft16(ONE, [1], [0x3C00, 0x3C00, 0x3C00], False),
+              "lengths {1} over a payload of 3 halves: the lengths must sum to the payload")
+write_invalid("f16-payload-inf", craft16(ONE, [2], [0x3C00, 0xFC00], True),
+              "a payload half that is -infinity: every half is finite")
+write_invalid("f16-payload-nan", craft16(ONE, [1, 1], [0x3800, 0x7C01], False),
+              "a payload half that is NaN (0x7C01), in a segment no placeholder names: the rule is the payload's")
+
 write_invalid_nam("weights-integer", b'{"architecture":"X","weights":7}',
                   "an integer \"weights\" would be stored as a placeholder naming a segment that does not exist")
 write_invalid_nam("weights-integer-nested", b'{"architecture":"X","config":{"weights":0},"weights":[0.5]}',
@@ -277,6 +391,17 @@ write_invalid_nam("lone-surrogate", b'{"architecture":"X","s":"\\udc00","weights
                   "an escaped lone surrogate: no Unicode text, so not a JSON string")
 write_invalid_nam("weights-float32-overflow", b'{"architecture":"X","weights":[0.5,1e39]}',
                   "1e39 is a finite JSON number past the float32 range: the payload never stores an infinity")
+
+# float16's own refusals: each .nam packs as float32, and pack refuses it with dtype 1
+write_invalid_nam("f16-overflow-tie", b'{"architecture":"X","weights":[0.5,65520]}',
+                  "65520 is the tie above the largest half 65504 and rounds to the even infinity: no half holds it",
+                  dtype=1)
+write_invalid_nam("f16-overflow-flt-max", b'{"architecture":"X","weights":[-3.4028234663852886e+38]}',
+                  "-FLT_MAX: a finite float32 past every half", dtype=1)
+write_invalid_nam("f16-overflow-nested",
+                  b'{"architecture":"SlimmableContainer","config":{"submodels":[{"model":{"weights":[0.5,100000]}}]},'
+                  b'"weights":[0.5]}',
+                  "one weight past half's range in a submodel: pack refuses the whole .nam", dtype=1)
 
 with open(os.path.join(HERE, "manifest.json"), "w") as f:
     json.dump(manifest, f, indent=2)
