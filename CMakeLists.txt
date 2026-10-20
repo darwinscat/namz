@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 cmake_minimum_required(VERSION 3.14)
-project(namz VERSION 4.4.0 LANGUAGES CXX)
+project(namz VERSION 4.4.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -85,7 +85,27 @@ if(NAMZ_BUILD_TESTS)
              -DOUT=${_out}/edge.nam16z ${_script} encode ${_vec}/edge-floats.nam ${_out}/edge.nam16z --f16)
     add_test(NAME namz_cli_verify_unknown_option COMMAND ${_expect} -DEXIT=2 "-DSTDERR=unknown option: --bogus"
              ${_script} verify ${_vec}/nested.nam --bogus)
+    # decode and map refuse what they do not know, as encode and verify do — before anything is written
+    add_test(NAME namz_cli_decode_unknown_option COMMAND ${_expect} -DEXIT=2 "-DSTDERR=unknown option: --bogus"
+             -DOUT=${_out}/bogus.nam ${_script} decode ${_vec}/nested.namz ${_out}/bogus.nam --bogus)
+    add_test(NAME namz_cli_map_unknown_option COMMAND ${_expect} -DEXIT=2 "-DSTDERR=unknown option: --bogus"
+             ${_script} map ${_vec}/nested.namz --bogus)
+    add_test(NAME namz_cli_map_json_unknown_option COMMAND ${_expect} -DEXIT=2 "-DSTDERR=unknown option: --bogus"
+             ${_script} map ${_vec}/nested.namz --json --bogus)
+    # map --json is JSON whatever a value holds: a tab and a newline come out escaped, never raw
+    add_test(NAME namz_cli_map_json_encode COMMAND namz_cli encode ${_vec}/nested.nam ${_out}/escapes.namz
+             --set "note=tab\there\nnewline")
+    set_tests_properties(namz_cli_map_json_encode PROPERTIES FIXTURES_SETUP cli_map_json)
+    add_test(NAME namz_cli_map_json_escapes COMMAND ${_expect} -DEXIT=0 "-DSTDERR=^$"
+             -DSTDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cli-map-json.expected
+             ${_script} map ${_out}/escapes.namz --json)
+    set_tests_properties(namz_cli_map_json_escapes PROPERTIES FIXTURES_REQUIRED cli_map_json)
   endif()
+
+  # The documents name the release the code is: the README's FetchContent tag, the CHANGELOG's newest
+  # entry, and a link for every entry.
+  add_test(NAME namz_docs_version COMMAND ${CMAKE_COMMAND} -DVERSION=${PROJECT_VERSION}
+           -DROOT=${CMAKE_CURRENT_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs-version.cmake)
 
   add_executable(namz_test_rig tests/rig.cpp)
   target_link_libraries(namz_test_rig PRIVATE namz::rig namz::namz)   # namz::namz brings nlohmann for the rig.json loader

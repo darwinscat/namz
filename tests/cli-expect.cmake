@@ -4,9 +4,12 @@
 # or says something else, fails. (CTest's own PASS_REGULAR_EXPRESSION ignores the exit code, and WILL_FAIL
 # passes on any failure at all, an "unknown option" included.)
 #
-#   cmake -DCLI=<namz> -DEXIT=<code> -DSTDERR=<regex> [-DOUT=<file>] -P cli-expect.cmake -- <cli args...>
+#   cmake -DCLI=<namz> -DEXIT=<code> -DSTDERR=<regex> [-DOUT=<file>] [-DSTDOUT_FILE=<file>]
+#         -P cli-expect.cmake -- <cli args...>
 #
 # OUT is removed before the run, so a file left by an earlier run cannot pass for one this run wrote.
+# STDOUT_FILE holds the exact stdout expected, byte for byte but for line endings and trailing whitespace
+# (Windows prints a CRLF, a checkout may hold one).
 
 foreach(_v CLI EXIT STDERR)
   if(NOT DEFINED ${_v})
@@ -43,6 +46,16 @@ if(NOT "${_err}" MATCHES "${STDERR}")
 endif()
 if(DEFINED OUT AND EXISTS "${OUT}")
   string(APPEND _bad "\n  ${OUT} was written")
+endif()
+if(DEFINED STDOUT_FILE)
+  file(READ "${STDOUT_FILE}" _want)
+  foreach(_s _want _out)
+    string(REPLACE "\r\n" "\n" ${_s} "${${_s}}")
+    string(REGEX REPLACE "[ \t\r\n]+$" "" ${_s} "${${_s}}")
+  endforeach()
+  if(NOT "${_out}" STREQUAL "${_want}")
+    string(APPEND _bad "\n  stdout is not ${STDOUT_FILE}:\n  got  [${_out}]\n  want [${_want}]")
+  endif()
 endif()
 if(_bad)
   message(FATAL_ERROR "namz ${_args}:${_bad}\n  stderr: ${_err}")
