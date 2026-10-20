@@ -48,22 +48,42 @@ readMeta(withMeta); // { tone_type: 'hi-gain', boost: 'true', device: 'tube:1,pn
 | `readMeta(data) -> object` | display header without touching weights. `{}` for v1 / non-`.namz`. |
 | `isNamz(data) -> boolean` | cheap magic check. |
 
-`options`: `{ shuffle = true, metadata = {} }`. `unpack` is total: for **any** input it returns a
+`options`: `{ shuffle = true, metadata = {}, dtype = DTYPE_F32 }`. `unpack` is total: for **any** input it returns a
 `Uint8Array` (empty on failure) and never throws.
+
+### Float16 — `.nam16z` (lossy, opt-in)
+
+```js
+import { pack, DTYPE_F16 } from "@darwins-cat/namz";
+
+const half = pack(nam, { dtype: DTYPE_F16 }); // each weight's float32 -> the nearest IEEE half (ties to even)
+```
+
+**Float16 is lossy, and it is written only when asked for.** Each weight is rounded to the IEEE half
+nearest its float32 — up to half a step of an 11-bit significand — for a payload half the size; float32
+(`DTYPE_F32`) stays the default and the only lossless dtype. `pack` refuses the whole `.nam` (empty result)
+if a weight would pass half's range (|w| ≥ 65520; up to there it rounds to 65504 at most). Name such a file
+`.nam16z`, so the loss shows in its name. `unpack` and `readMeta` need no option: they go by the dtype
+byte in the file, never its name, and widen each half to the float32 of the same value, exactly. The bytes
+are the C++ reference's (4.4.0) for the same input, checked against the shared vectors.
 
 ## CLI
 
 ```bash
 namz encode in.nam out.namz [--no-shuffle] [--set key=value ...]
-namz decode in.namz out.nam
-namz map    in.namz [--json]        # print the metadata header (no weight decode)
-namz verify in.nam                  # pack->unpack round-trip check + ratio
+namz encode in.nam out.nam16z --f16 [--no-shuffle] [--set key=value ...]   # float16, LOSSY
+namz decode in.namz|in.nam16z out.nam
+namz map    in.namz|in.nam16z [--json]   # print the metadata header (no weight decode)
+namz verify in.nam [--f16]          # pack->unpack round-trip check + ratio
 ```
+
+`--f16` writes only a `*.nam16z`, and a `*.nam16z` only with `--f16`; either mismatch is refused (exit 2)
+before anything is read.
 
 ## Guarantees
 
 - **Lossless to float32** — `unpack(pack(x))` is bit-exact at any nesting depth, including `-0.0`,
-  subnormals, and `FLT_MAX`.
+  subnormals, and `FLT_MAX`. That is the default dtype's promise; float16 is lossy by design and opt-in.
 - **Deterministic** — `pack(x)` is byte-identical across runs and platforms; the codec is idempotent.
 - **Robust** — every malformed input (bad magic, unknown version/codec/dtype, truncation, trailing junk,
   a lying `metaLen`/`numArrays`, a placeholder naming no segment, an over-cap body) is rejected cleanly.

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-// The cross-language TCK: encode byte-match, decode bit-exact float32, reject invalid, idempotence;
+// The cross-language TCK: encode byte-match, decode bit-exact float32 (for dtype 1, the half nearest each
+// input float32, widened), reject invalid, idempotence;
 // decode-only files unpack to the reference's exact bytes; refused .nam inputs are refused by pack.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isNamz, pack, unpack } from "../src/index.js";
-import { bytesEqual, conformanceDir, readManifest, readVector } from "./helpers.js";
+import { DTYPE_F16, DTYPE_F32, isNamz, pack, unpack } from "../src/index.js";
+import { bytesEqual, conformanceDir, nearestHalf, readManifest, readVector } from "./helpers.js";
 
 const manifest = readManifest();
 
@@ -29,11 +30,21 @@ function gatherWeights(node, out) {
   }
 }
 
+test("nearestHalf: the test's own rounding agrees with hand-checked halves", () => {
+  const cases = [
+    [2 ** -24, 2 ** -24], [2 ** -25, 0], [-(2 ** -25), -0], [1.5 * 2 ** -24, 2 ** -23], [1023.5 * 2 ** -24, 2 ** -14],
+    [1 + 2 ** -11, 1], [1 + 3 * 2 ** -11, 1 + 2 ** -9], [2047.5, 2048], [2049, 2048], [2051, 2052], [65519, 65504],
+    [Math.fround(0.1), 0.0999755859375],
+  ];
+  for (const [f, want] of cases) assert.ok(Object.is(nearestHalf(f), want), `nearestHalf(${f})`);
+});
+
 for (const c of manifest?.valid ?? []) {
   test(`valid: ${c.name}`, () => {
     const src = readVector(c.input);
     const expected = readVector(c.output);
-    const options = { shuffle: c.shuffle !== false, metadata: c.set || {} };
+    const options = { shuffle: c.shuffle !== false, metadata: c.set || {}, dtype: c.dtype };
+    assert.ok(c.dtype === DTYPE_F32 || c.dtype === DTYPE_F16, "every valid case states its dtype");
 
     // 1. encode byte-match
     const got = pack(src, options);
@@ -48,6 +59,7 @@ for (const c of manifest?.valid ?? []) {
     gatherWeights(JSON.parse(Buffer.from(decoded).toString("utf8")), gotW);
     assert.equal(want.length, gotW.length, "weight-array count differs");
     for (let i = 0; i < want.length; i++) {
+      if (c.dtype === DTYPE_F16) want[i] = Float32Array.from(want[i], nearestHalf);
       assert.ok(
         bytesEqual(new Uint8Array(want[i].buffer), new Uint8Array(Float32Array.from(gotW[i]).buffer)),
         "weights not bit-exact",
@@ -82,6 +94,7 @@ for (const c of manifest?.decodeOnly ?? []) {
 // A .nam pack must refuse.
 for (const c of manifest?.invalidNam ?? []) {
   test(`invalid .nam refused: ${c.name}`, () => {
-    assert.equal(pack(readVector(c.file)).length, 0, `should be refused: ${c.why}`);
+    assert.ok(c.dtype === DTYPE_F32 || c.dtype === DTYPE_F16, "every refused .nam states its dtype");
+    assert.equal(pack(readVector(c.file), { dtype: c.dtype }).length, 0, `should be refused: ${c.why}`);
   });
 }
