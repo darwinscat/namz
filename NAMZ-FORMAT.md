@@ -88,10 +88,11 @@ wrote.
   output and 32–41 dB under each capture's own training error. The files are 0.55× the float32 `.namz`,
   0.52× after `brotli -q 11`; the 2-plane shuffle takes another ~4% off the brotli size.
 
-The C++ reference writes and reads dtype 1 as of 4.4.0. The language ports and the conformance vectors
-follow in their own release; until then the ports refuse dtype 1 as an unknown dtype, and the vector
-`bad-dtype` — a float32 file with its dtype byte set to 1 — is still refused by the reference, now by the
-length rule (its 4-byte payload is twice what its lengths ask of 2-byte halves).
+The C++ reference writes and reads dtype 1 as of 4.4.0, and both language ports as of their 1.3.0
+(`@darwins-cat/namz` and `namz` on PyPI). The conformance vectors pin it: float16 goldens (`.nam16z`),
+decode-only halves, and the refusals of both readers and of `pack`. The vector `bad-dtype` — a float32 file
+with its dtype byte set to 1 — is refused by the length rule (its 4-byte payload is twice what its lengths
+ask of 2-byte halves); `bad-dtype-2` is the unknown dtype.
 
 ## Placeholders and depth
 
