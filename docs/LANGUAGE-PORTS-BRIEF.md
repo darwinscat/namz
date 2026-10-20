@@ -34,25 +34,34 @@ byte-identical across runs / platforms / languages). A readable metadata header 
 without decoding weights.
 
 ## Testing model (the whole point)
-Every port runs the **shared conformance vectors**:
-1. `encode(input, options)` **byte-matches** the expected `.namz`;
-2. `decode(expected)` reproduces weights **bit-exact** (float32);
-3. every `invalid/*.namz` is **rejected** cleanly (never crash/hang).
+Every port runs the **shared conformance vectors** (`conformance/manifest.json`, four sections):
+1. `valid`: `encode(input, options)` **byte-matches** the expected `.namz`, and `decode(expected)`
+   reproduces the weights **bit-exact** (float32);
+2. `invalid`: every listed `.namz` is **rejected** cleanly by decode (never crash/hang);
+3. `decodeOnly`: every listed `.namz` — one `pack` never writes — decodes to **exactly** its `.nam`, byte for
+   byte (the placeholder literal as written, the reference's own double digits);
+4. `invalidNam`: every listed `.nam` is **refused** by encode.
 
 Plus a **local property fuzz** per language (N random finite float32 → round-trip → bit-exact) and
 idiomatic unit tests — but the shared vectors are the guarantee.
 
 ### Byte-match gotchas
-- Skeleton = **minified JSON, object keys sorted ascending** (nlohmann sorts). Python:
-  `json.dumps(obj, sort_keys=True, separators=(",", ":"))`. JS: `JSON.stringify` doesn't sort → custom
-  sorted+compact stringify. Where a language can't match key order, rely on decode-bit-exact +
+- Skeleton = **minified JSON, object keys sorted ascending** (nlohmann sorts). JS: `JSON.stringify` doesn't
+  sort → custom sorted+compact stringify.
+- **Numbers print with nlohmann's digits**, not the language's: Grisu2 (`dtoa_impl` in nlohmann's
+  `to_chars.hpp`) is neither always the shortest nor always the closest, and it switches to exponent form
+  past 15 integer digits (`1e+15`). Shortest round-trip printers (`repr`, `toExponential`) differ on about 1
+  in 400 float32 values — every real capture's `unpack`. Port `dtoa_impl` step for step (64-bit products:
+  BigInt in JS, ints in Python); Python's `json.dumps` hard-codes `float.__repr__`, so it needs its own
+  serializer. The `decodeOnly` vector `float-digits` and the `valid` vector `skeleton-doubles` catch it. Where a language can't match key order, rely on decode-bit-exact +
   idempotence and document it — never fake a golden.
 - Endianness: write `u16`/`u32` little-endian explicitly. Float payload IEEE-754 LE (numpy
   `astype("<f4").tobytes()`).
 - Reproduce the byte-plane **shuffle** exactly (`shuffleInto`/`unshuffleInto` in `namz.h`).
 
 ## Per-language deliverable
-Idiomatic port (use the language's **native** JSON lib — do NOT port nlohmann) → tests against the shared
+Idiomatic port (use the language's **native** JSON lib for parsing where it keeps each literal as written;
+port nothing of nlohmann but its double printer) → tests against the shared
 vectors + local fuzz → packaging for the registry → CI (build + test + conformance, cross-OS where cheap)
 → publish-on-tag automation → README → **MIT** license.
 
