@@ -6,6 +6,34 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [4.4.1] — 2026-10-20 — no cap means no cap, and the CLI's JSON is JSON
+
+### Fixed
+- **`unpack` with a cap of `SIZE_MAX` reads the file.** Its early check of the body added 4096 bytes of
+  slack to `maxJsonBytes`, and a cap of `SIZE_MAX` — or anything within 4096 of it — wrapped round to less
+  than 4096: a caller asking for no cap had every file with a body over 4 KB refused. The slack is taken
+  off the body now. `decode` was never affected.
+- **`namz map --json` prints JSON whatever a value holds.** It escaped only `"` and `\`, so a tab or a
+  newline in a value came out raw, and a NUL cut the line short; it now prints through nlohmann/json, every
+  control character escaped. A value without one prints as before.
+
+### Changed
+- **`namz decode` and `namz map` refuse an argument they do not know** (exit 2, usage on stderr, nothing
+  written), as `encode` and `verify` do; 4.4.0 ignored it.
+
+### Tests
+- `adversarial`: the cap at `SIZE_MAX`; one leading byte-order mark skipped in the `.nam`, the skeleton and
+  the meta block and a second one refused — NAMZ-FORMAT.md's "JSON text" rule, which no reference test
+  held; and a check that could not fail (`|| true` on an empty skeleton) now asserts the refusal.
+- `namz_docs_version`: README.md's FetchContent tag, the CHANGELOG's newest entry and every entry's link
+  must name the version CMake and `namz.h` state. The README fetched `v0.1.0`, a tag that never existed; it
+  fetches the current tag now, and every entry here links its release.
+
+### Language ports
+Both ports' CLIs still escape only `"` and `\` in `map --json` and ignore an argument `decode`, `map` or
+`verify` does not know; they follow in their own release. Neither port's `unpack` had the cap's wrap: their
+integers do not wrap.
+
 ## [ports 1.3.0] — 2026-10-20 — the ports and the vectors carry float16
 
 The C++ reference is unchanged (`NAMZ_VERSION` stays 4.4.0); its conformance runner reads the new `dtype`
@@ -467,6 +495,16 @@ First stable release of the C++ reference.
 - **Lossless** to float32, **deterministic** (byte-identical across runs, platforms, and — via the
   conformance vectors — language ports), and **robust** (every malformed input is rejected cleanly).
 
+[4.4.1]: https://github.com/darwinscat/namz/releases/tag/v4.4.1
+[4.4.0]: https://github.com/darwinscat/namz/releases/tag/v4.4.0
+[4.3.1]: https://github.com/darwinscat/namz/releases/tag/v4.3.1
+[4.3.0]: https://github.com/darwinscat/namz/releases/tag/v4.3.0
+[4.2.0]: https://github.com/darwinscat/namz/releases/tag/v4.2.0
+[4.1.0]: https://github.com/darwinscat/namz/releases/tag/v4.1.0
+[4.0.0]: https://github.com/darwinscat/namz/releases/tag/v4.0.0
+[3.3.0]: https://github.com/darwinscat/namz/releases/tag/v3.3.0
+[3.2.0]: https://github.com/darwinscat/namz/releases/tag/v3.2.0
+[3.1.0]: https://github.com/darwinscat/namz/releases/tag/v3.1.0
 [3.0.0]: https://github.com/darwinscat/namz/releases/tag/v3.0.0
 [2.0.0]: https://github.com/darwinscat/namz/releases/tag/v2.0.0
 [1.0.0]: https://github.com/darwinscat/namz/releases/tag/v1.0.0

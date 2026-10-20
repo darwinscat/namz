@@ -114,6 +114,7 @@ int doDecode (int argc, char** argv)
     if (argc < 4) return usage();
     const char* in = argv[2];
     const char* out = argv[3];
+    if (argc > 4) { std::fprintf (stderr, "unknown option: %s\n", argv[4]); return usage(); }   // before anything is written
     bool ok = false;
     auto src = readFile (in, ok);
     if (! ok) { std::fprintf (stderr, "cannot read %s\n", in); return 1; }
@@ -128,7 +129,12 @@ int doMap (int argc, char** argv)
 {
     if (argc < 3) return usage();
     const char* in = argv[2];
-    bool asJson = (argc >= 4 && std::strcmp (argv[3], "--json") == 0);
+    bool asJson = false;
+    for (int i = 3; i < argc; ++i)
+    {
+        if (std::strcmp (argv[i], "--json") == 0) asJson = true;
+        else { std::fprintf (stderr, "unknown option: %s\n", argv[i]); return usage(); }
+    }
     bool ok = false;
     auto src = readFile (in, ok);
     if (! ok) { std::fprintf (stderr, "cannot read %s\n", in); return 1; }
@@ -136,16 +142,12 @@ int doMap (int argc, char** argv)
     const std::map<std::string, std::string> m = namz::readMeta (src.data(), src.size());
     if (asJson)
     {
-        std::printf ("{");
-        bool first = true;
-        for (const auto& kv : m)
-        {
-            // minimal JSON string escaping for the values we emit
-            auto esc = [] (const std::string& s) { std::string o; for (char c : s) { if (c == '"' || c == '\\') o += '\\'; o += c; } return o; };
-            std::printf ("%s\"%s\":\"%s\"", first ? "" : ",", esc (kv.first).c_str(), esc (kv.second).c_str());
-            first = false;
-        }
-        std::printf ("}\n");
+        // nlohmann's own print, keys sorted, no spaces: a control character in a value comes out escaped
+        // (\t, \n, \u0001 …) and a NUL does not cut the line short, so this is JSON whatever the file holds.
+        // Every key and value readMeta returns came out of nlohmann's parser, so each is valid UTF-8.
+        const std::string line = nlohmann::json (m).dump();
+        std::fwrite (line.data(), 1, line.size(), stdout);
+        std::printf ("\n");
     }
     else
     {

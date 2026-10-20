@@ -62,8 +62,8 @@
 
 #define NAMZ_VERSION_MAJOR 4
 #define NAMZ_VERSION_MINOR 4
-#define NAMZ_VERSION_PATCH 0
-#define NAMZ_VERSION "4.4.0"
+#define NAMZ_VERSION_PATCH 1
+#define NAMZ_VERSION "4.4.1"
 
 #include <cstddef>
 #include <cstdint>
@@ -670,8 +670,9 @@ std::vector<std::uint8_t> unpack (const void* namz, std::size_t n, std::size_t m
     }
 
     // Body is stored verbatim. Cap the raw size against the reconstructed-JSON cap so a crafted oversized
-    // blob can't force a huge allocation before the per-field checks below catch it.
-    if (n - off > maxJsonBytes + 4096)
+    // blob can't force a huge allocation before the per-field checks below catch it. The slack is taken off
+    // the body, not added to the cap: a cap of SIZE_MAX (no cap) plus 4096 would wrap round to 4095.
+    if (n - off > maxJsonBytes && n - off - maxJsonBytes > 4096)
         return {};
 
     const std::uint8_t* p = bytes + off;

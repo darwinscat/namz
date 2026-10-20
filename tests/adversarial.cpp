@@ -249,7 +249,7 @@ int main()
 
         auto corrupt = [&] (std::size_t off, std::uint32_t v) { auto m = base; if (off + 4 <= m.size()) { m[off] = v & 0xff; m[off + 1] = (v >> 8) & 0xff; m[off + 2] = (v >> 16) & 0xff; m[off + 3] = (v >> 24) & 0xff; } return namz::unpack (m.data(), m.size(), kCap).empty(); };
         CHECK (corrupt (10, 0xFFFFFFFFu), "crafted: absurd skeletonLen rejected");
-        CHECK (corrupt (10, 0u) || true, "crafted: zero skeletonLen handled (no crash)");
+        CHECK (corrupt (10, 0u), "crafted: zero skeletonLen rejected (an empty skeleton is no JSON)");
         // numArrays sits after the skeleton; blow it up -> OOM guard must reject.
         const std::uint32_t skLen = rdU32 (base, 10);
         CHECK (corrupt (14 + skLen, 0xFFFFFFFFu), "crafted: absurd numArrays rejected (OOM guard)");
@@ -730,6 +730,46 @@ int main()
         CHECK (! e16.empty() && e16[6] == namz::DtypeF16 && decodeAgrees (e16)
                && namz::unpack (e16.data(), e16.size(), kCap) == namz::unpack (e32.data(), e32.size(), kCap),
                "f16: a .nam with no weights packs as F16 and reads back as the F32 pack does");
+    }
+
+    // === 16) THE CAP AT ITS TOP — a caller with no limit passes SIZE_MAX, and unpack must read that as no limit:
+    //         its early body check adds 4096 of slack to the cap, which must not wrap round to a tiny one ===
+    for (const auto dt : kDtypes)
+    {
+        gTag = tagOf (dt);
+        json big; big["architecture"] = "X"; big["weights"] = std::vector<double> (3000, 0.25);   // a body past 4096 bytes
+        const auto blob = packJson (big, true, dt);
+        const auto want = namz::unpack (blob.data(), blob.size(), kCap);
+        const std::size_t top = (std::numeric_limits<std::size_t>::max)();
+        bool unbounded = ! want.empty();
+        for (const std::size_t cap : { top, top - 1, top - 4095, top - 4096 })
+            if (namz::unpack (blob.data(), blob.size(), cap) != want)
+                unbounded = false;
+        CHECK (unbounded, "cap: a cap of SIZE_MAX, or within 4096 of it, reads the file as no cap at all would");
+        gTag = "";
+    }
+
+    // === 17) THE BYTE-ORDER MARK — every JSON text skips one leading BOM (NAMZ-FORMAT.md, "JSON text"): the .nam
+    //         pack reads, the skeleton both readers read, the meta block readMeta reads; a second one is not skipped ===
+    {
+        const std::string bom = "\xEF\xBB\xBF";
+        json j; j["architecture"] = "X"; j["weights"] = { 0.5, -0.25 };
+        const std::string text = j.dump(), one = bom + text, two = bom + bom + text;
+        const auto plain = namz::pack (text.data(), text.size());
+        CHECK (! plain.empty() && namz::pack (one.data(), one.size()) == plain, "BOM: pack skips one leading BOM, and writes the file it writes without it");
+        CHECK (namz::pack (two.data(), two.size()).empty(), "BOM: pack refuses a .nam behind two");
+
+        const auto sk0 = craft ("{\"weights\":0}", { 2u }, 2), sk1 = craft (bom + "{\"weights\":0}", { 2u }, 2);
+        const auto sk2 = craft (bom + bom + "{\"weights\":0}", { 2u }, 2);
+        const auto u0 = namz::unpack (sk0.data(), sk0.size(), kCap);
+        CHECK (! u0.empty() && namz::unpack (sk1.data(), sk1.size(), kCap) == u0 && decodeAgrees (sk1),
+               "BOM: a skeleton behind one reads as the same skeleton without it, in unpack and in decode");
+        CHECK (namz::unpack (sk2.data(), sk2.size(), kCap).empty() && decodeAgrees (sk2), "BOM: a skeleton behind two is refused by both readers");
+
+        const auto m1 = withMeta (sk0, bom + "{\"a\":\"b\"}"), m2 = withMeta (sk0, bom + bom + "{\"a\":\"b\"}");
+        using Meta = std::map<std::string, std::string>;
+        CHECK (namz::readMeta (m1.data(), m1.size()) == Meta ({ { "a", "b" } }), "BOM: readMeta skips one");
+        CHECK (namz::readMeta (m2.data(), m2.size()).empty(), "BOM: readMeta reads a meta block behind two as no metadata");
     }
 
     std::fprintf (stderr, "\n==== namz adversarial: %d checks, %d failures — %s ====\n",
