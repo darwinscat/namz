@@ -155,7 +155,7 @@ Consume from another CMake project:
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(namz GIT_REPOSITORY https://github.com/darwinscat/namz.git GIT_TAG v4.4.1)
+FetchContent_Declare(namz GIT_REPOSITORY https://github.com/darwinscat/namz.git GIT_TAG v5.0.0)
 FetchContent_MakeAvailable(namz)
 target_link_libraries(your_target PRIVATE namz::namz)   # header-only + nlohmann/json
 ```
