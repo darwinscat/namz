@@ -252,6 +252,41 @@ namespace detail
         }
         out += '\n'; out += ind; out += '}';
     }
+
+    // A model knob that would be written as a FREQUENCY knob: no bands of its own, and a frequency stated
+    // on at least one position (a 0 on the first one does not turn it into a curve knob).
+    inline bool frequencyCandidate (const Tone& t)
+    {
+        if (! t.sections.empty()) return false;
+        bool any = false;
+        for (const auto& p : t.positions)
+        {
+            if (! p.sections.empty()) return false;
+            any = any || p.hz != 0.0;
+        }
+        return any;
+    }
+
+    // …and one the loader keeps: a name, two positions or more with unique non-empty values, a strictly
+    // positive frequency on every one, a Q on all or none, its reference among them, and on a dial norms
+    // inside 0…1 and strictly ascending.
+    inline bool frequencyKnobPlayable (const Tone& t)
+    {
+        if (t.name.empty() || t.positions.size() < 2 || ! frequencyCandidate (t)) return false;
+        const bool withQ = t.positions.front().q > 0.0;
+        bool hasReference = false;
+        for (std::size_t i = 0; i < t.positions.size(); ++i)
+        {
+            const auto& p = t.positions[i];
+            if (p.value.empty() || ! std::isfinite (p.hz) || ! (p.hz > 0.0)) return false;
+            if (withQ ? ! (std::isfinite (p.q) && p.q > 0.0) : p.q != 0.0) return false;
+            if (t.sweep > 0 && (! std::isfinite (p.norm) || p.norm < 0.0 || p.norm > 1.0
+                                || (i > 0 && ! (p.norm > t.positions[i - 1].norm)))) return false;
+            for (std::size_t k = 0; k < i; ++k) if (t.positions[k].value == p.value) return false;
+            hasReference = hasReference || p.value == t.reference;
+        }
+        return hasReference;
+    }
 } // namespace detail
 
 // rig.json text — the pack's source of truth (loadRigManifest is the exact inverse for every field
@@ -325,11 +360,12 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 fj["settings"] = std::move (s);
                 if (fe.inputDb < -0.0005 || fe.inputDb > 0.0005)
                     fj["input_db"] = std::round (fe.inputDb * 100.0) / 100.0;
-                if (fe.lagSamples) fj["lag_samples"] = *fe.lagSamples;   // 0 is a reading; absent is none
-                // The same, against the model's own input — written only where the loader would read it
-                // back, so a pack never carries a reading its reader drops.
-                if (fe.inputLagSamples && *fe.inputLagSamples >= -kMaxInputLagSamples
-                                       && *fe.inputLagSamples <= kMaxInputLagSamples)
+                // 0 is a reading; absent is none. Both lags are written only where the loader would read
+                // them back, so a pack never carries a reading its reader drops.
+                if (fe.lagSamples && *fe.lagSamples >= -kMaxLagSamples && *fe.lagSamples <= kMaxLagSamples)
+                    fj["lag_samples"] = *fe.lagSamples;
+                if (fe.inputLagSamples && *fe.inputLagSamples >= -kMaxLagSamples
+                                       && *fe.inputLagSamples <= kMaxLagSamples)
                     fj["input_lag_samples"] = *fe.inputLagSamples;
                 if (fe.polarity && (*fe.polarity == 1 || *fe.polarity == -1)) fj["polarity"] = *fe.polarity;
                 if (fe.epochs)     fj["epochs"]      = *fe.epochs;
@@ -343,6 +379,37 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             // knob, so a writer that emitted both would produce a pack nothing can load. `sections` wins
             // because it is the form a producer CHOSE: the ladder is what the bands were fitted to, and
             // a model still holding it beside the fit has not un-chosen anything.
+            // THE LINKS, judged on the model before a byte is written: the loader refuses a pack whose
+            // links are broken as written, so a link this writer cannot stand behind is not written at
+            // all. A band keeps its `hz_by` only when it names a frequency knob the loader will keep,
+            // unique by name, named by no other written band, and agreeing with the band at its
+            // reference; a frequency knob is written only when such a band names it. Anything else
+            // comes out as what the loader would make of it: the band at its own frequency, no FREQ.
+            std::map<std::string, int> toneNames, namedBy;
+            for (const auto& t : st.tone)
+            {
+                if (t.name.empty()) continue;
+                ++toneNames[t.name];
+                if (! t.sections.empty() && t.sweep > 0)
+                    for (const auto& sc : t.sections) if (! sc.hzBy.empty()) ++namedBy[sc.hzBy];
+            }
+            auto ownerOf = [&] (const Tone& t, const Section& sc) -> const Tone* {
+                if (sc.hzBy.empty() || t.name.empty() || t.sweep <= 0
+                    || namedBy[sc.hzBy] != 1 || toneNames[sc.hzBy] != 1) return nullptr;
+                for (const auto& o : st.tone)
+                {
+                    if (o.name != sc.hzBy) continue;
+                    if (! detail::frequencyKnobPlayable (o)) return nullptr;
+                    for (const auto& p : o.positions)
+                        if (p.value == o.reference)
+                            return p.hz == sc.hz && (p.q == 0.0 || p.q == sc.q) ? &o : nullptr;
+                }
+                return nullptr;
+            };
+            std::map<std::string, bool> linked;
+            for (const auto& t : st.tone)
+                for (const auto& sc : t.sections) if (ownerOf (t, sc) != nullptr) linked[sc.hzBy] = true;
+
             auto tone = nlohmann::ordered_json::array();
             for (const auto& me : st.tone)
             {
@@ -354,7 +421,8 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 bool asPosSections = false;
                 for (const auto& p : me.positions) if (! p.sections.empty()) { asPosSections = true; break; }
                 // …and a FREQUENCY knob is read off its positions too: a frequency on each, nothing else.
-                const bool asFrequency = ! asSections && ! asPosSections && isFrequencyKnob (me);
+                const bool asFrequency = ! asSections && ! asPosSections && detail::frequencyCandidate (me);
+                if (asFrequency && ! linked[me.name]) continue;   // moves nothing the loader would keep
                 const bool asCurves = ! asSections && ! asPosSections && ! asFrequency;
                 if (asSections ? me.sections.empty() : me.positions.empty()) continue;
                 // …and a `sections` knob with no sweep is one the reader drops on sight (the travel law
@@ -427,15 +495,17 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                         // A travel is written as the pair at the two stops. A side the model left at 0
                         // ("does not move") is written as the reference value itself — the same statement
                         // in the pack's vocabulary, where an absent KEY means neither side moves and a
-                        // present one must say both.
-                        if (sc.hzAtMin > 0.0 || sc.hzAtMax > 0.0)
+                        // present one must say both. Under a frequency knob the frequency is that knob's,
+                        // and so is the Q when it states one: the band's own travel for them is not written.
+                        const Tone* owner = ownerOf (me, sc);
+                        if (owner == nullptr && (sc.hzAtMin > 0.0 || sc.hzAtMax > 0.0))
                             x["hz_at"] = nlohmann::ordered_json::array ({ sc.hzAtMin > 0.0 ? sc.hzAtMin : sc.hz,
                                                                   sc.hzAtMax > 0.0 ? sc.hzAtMax : sc.hz });
-                        if (sc.qAtMin > 0.0 || sc.qAtMax > 0.0)
+                        if ((owner == nullptr || owner->positions.front().q == 0.0) && (sc.qAtMin > 0.0 || sc.qAtMax > 0.0))
                             x["q_at"]  = nlohmann::ordered_json::array ({ sc.qAtMin > 0.0 ? sc.qAtMin : sc.q,
                                                                   sc.qAtMax > 0.0 ? sc.qAtMax : sc.q });
                         // The knob that moves this band's frequency instead, when another one does.
-                        if (! sc.hzBy.empty()) x["hz_by"] = sc.hzBy;
+                        if (owner != nullptr) x["hz_by"] = sc.hzBy;
                         sections.push_back (std::move (x));
                     }
                     mj["sections"] = std::move (sections);

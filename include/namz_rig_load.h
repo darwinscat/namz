@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -174,8 +175,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
     // checked the field was decoration.
     // …and a `schema` that is not an integer is refused too: `jint` used to answer 1 for `4.0` or `"4"`,
     // which let a pack this reader cannot judge through the gate as the oldest vintage there is.
+    // …and it is asked of the number as written: a non-negative integer is parsed unsigned, and read
+    // through a signed type 18446744073709551615 came back as -1 — the oldest vintage there is.
     if (auto s = j.find ("schema"); s != j.end())
-        if (! s->is_number_integer() || s->get<long long>() > kRigSchema) return rig;
+        if (int n = 0; ! detail::jintIn (*s, 1, kRigSchema, n)) return rig;
 
     rig.rigId     = detail::jstr (j, "rig_id");
     rig.familyId  = detail::jstr (j, "family_id");
@@ -260,16 +263,19 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         }
                     if (auto g = fj.find ("input_db"); g != fj.end() && g->is_number())
                         fe.inputDb = g->get<double>();
-                    // An integer, or nothing: a lag of 2.5 samples is not a reading this format speaks.
-                    if (auto l = fj.find ("lag_samples"); l != fj.end() && l->is_number_integer())
-                        fe.lagSamples = l->get<int>();
+                    // An integer inside the bound, or nothing: a lag of 2.5 samples is not a reading this
+                    // format speaks, and neither is one a second long — nor 4294967297, which an `int`
+                    // used to keep as 1.
+                    int n = 0;
+                    if (auto l = fj.find ("lag_samples");
+                        l != fj.end() && detail::jintIn (*l, -kMaxLagSamples, kMaxLagSamples, n))
+                        fe.lagSamples = n;
                     // …and the same against the model's own input: an integer inside the bound, or
                     // nothing. The polarity is a closed set — +1 or -1, as integers — and anything else
                     // (0, 2, -1.0, "-1") is not a reading. Neither refuses the manifest: absent and
                     // unreadable both mean "not measured", and a player that needs them measures.
-                    int n = 0;
                     if (auto l = fj.find ("input_lag_samples");
-                        l != fj.end() && detail::jintIn (*l, -kMaxInputLagSamples, kMaxInputLagSamples, n))
+                        l != fj.end() && detail::jintIn (*l, -kMaxLagSamples, kMaxLagSamples, n))
                         fe.inputLagSamples = n;
                     if (auto p = fj.find ("polarity"); p != fj.end() && detail::jintIn (*p, -1, 1, n) && n != 0)
                         fe.polarity = n;
@@ -354,11 +360,33 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             anyCurve = anyCurve || curve;
                             anyFreq  = anyFreq  || freq;
                             anyQ     = anyQ     || (freq && pj.contains ("q"));
+                            // A travel key in a position's band is a claim about a stop this knob does not
+                            // have, and `hz_by` one about a band it does not have. Judged here, over EVERY
+                            // band, before anything below can drop the knob and stop looking: whether a
+                            // manifest is refused must not depend on the order of its bands.
+                            if (const auto sx = pj.find ("sections"); sx != pj.end() && sx->is_array())
+                                for (const auto& b : *sx)
+                                    if (b.is_object() && (b.contains ("range_db") || b.contains ("hz_at")
+                                                          || b.contains ("q_at") || b.contains ("hz_by")))
+                                    { if (ok) *ok = false; return Rig {}; }
                         }
                     if ((int) anyBands + (int) anyCurve + (int) anyFreq > 1) { if (ok) *ok = false; return Rig {}; }
                     const bool asPosSections = anyBands;
                     const bool asFrequency   = anyFreq;
-                    toneDecls.push_back ({ me.name, asFrequency, anyQ });
+                    // A knob with no name is dropped below, whatever its form, so it is not declared: it
+                    // can neither be named nor be left unnamed.
+                    if (! me.name.empty()) toneDecls.push_back ({ me.name, asFrequency, anyQ });
+                    // A frequency knob's positions are addressed by `value` — its reference above all,
+                    // which the band's frequency is checked against. Two positions of one value are two
+                    // answers to one address, and which one a reader took would be its own choice.
+                    if (asFrequency)
+                    {
+                        std::set<std::string> seen;
+                        for (const auto& pj : *ps)
+                            if (const auto v = pj.is_object() ? detail::jstr (pj, "value") : std::string {};
+                                ! v.empty() && ! seen.insert (v).second)
+                            { if (ok) *ok = false; return Rig {}; }
+                    }
                     // A frequency knob has no filter of its own: where a filter goes, the grid a curve is
                     // sampled on and the band a curve held over mean nothing on it. Not read — the defaults
                     // stand, so what the writer leaves out reads back as what it was.
@@ -400,8 +428,10 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                                 // dial the norms must leave something to interpolate between: inside 0…1
                                 // and strictly ascending, which the geometric law divides by.
                                 if (! detail::readFrequencyPosition (pj, anyQ, p)) { usable = false; break; }
+                                // `norm` is present (refused above otherwise) — and must be a NUMBER: read
+                                // through a default, "0.25" or null would become a 0.0 nobody wrote.
                                 if (me.sweep > 0
-                                    && (! std::isfinite (p.norm) || p.norm < 0.0 || p.norm > 1.0
+                                    && (! pj["norm"].is_number() || ! std::isfinite (p.norm) || p.norm < 0.0 || p.norm > 1.0
                                         || (! me.positions.empty() && ! (p.norm > me.positions.back().norm))))
                                 { usable = false; break; }
                                 if (! p.value.empty()) me.positions.push_back (std::move (p));
@@ -412,10 +442,6 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                                 if (sx == pj.end() || ! sx->is_array()) { usable = false; break; }
                                 for (const auto& b : *sx)
                                 {
-                                    // A travel key here is a claim about a stop this knob does not have.
-                                    if (b.is_object() && (b.contains ("range_db") || b.contains ("hz_at")
-                                                          || b.contains ("q_at") || b.contains ("hz_by")))
-                                    { if (ok) *ok = false; return Rig {}; }
                                     PositionSection sc;
                                     if (! b.is_object() || ! detail::readPositionSection (b, sc)) { usable = false; break; }
                                     p.sections.push_back (sc);

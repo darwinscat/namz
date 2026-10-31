@@ -100,10 +100,10 @@ using Settings = std::map<std::string, std::string>;
 // See NAMZ-FORMAT.md.
 inline constexpr int kRigSchema = 5;
 
-// The most `input_lag_samples` may say, either way: one second at 48 kHz. A model that far behind its
-// input is not a latency but a broken capture, and a player that believed the number would allocate the
-// delay line it asks for.
-inline constexpr int kMaxInputLagSamples = 48000;
+// The most `lag_samples` and `input_lag_samples` may say, either way: one second at 48 kHz. A model that
+// far behind its input — or behind its sibling — is not a latency but a broken capture, and a player that
+// believed the number would allocate the delay line it asks for.
+inline constexpr int kMaxLagSamples = 48000;
 
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
@@ -228,7 +228,7 @@ struct FileEntry
     // against the first), and writes it on every entry it measured — the first file's own is 0. A player
     // delays each model by the largest lag minus its own, so any pair sums in phase. Not stated = not
     // measured: a player that crossfades must measure for itself, and a stage where some entries carry
-    // it and some do not is not measured either.
+    // it and some do not is not measured either. The loader reads only an integer within ±kMaxLagSamples.
     std::optional<int> lagSamples;
     // HOW MANY SAMPLES LATER than its own INPUT this model's output arrives, at the file's own sample
     // rate; negative = earlier. ABSOLUTE, where `lagSamples` is relative to the stage's first file — so
@@ -238,7 +238,7 @@ struct FileEntry
     // the lag, its sign the polarity). A player that mixes the clean input with the model — a bass
     // crossover — delays the clean by the lag (a negative lag delays the model) and multiplies it by the
     // polarity, so the two sum in phase. Not stated = not measured; the loader reads only an integer
-    // within ±kMaxInputLagSamples, and only +1 or -1.
+    // within ±kMaxLagSamples, and only +1 or -1.
     std::optional<int> inputLagSamples;
     std::optional<int> polarity;
     // HOW THIS MODEL WAS TRAINED: the epochs its weights have, and the ESR (error-to-signal ratio, lower
