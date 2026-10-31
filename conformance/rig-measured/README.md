@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 # `rig-measured` — the minimal modern device
 
-The second golden pack: **one gain dial + two tone knobs, one per form**. It is the smallest device shape a
-player must handle end to end, and it is deliberately the shape a real dirt pedal has.
+The second golden pack: **one gain dial + tone knobs in every form**. It is the smallest device shape a
+player must handle end to end, and it is deliberately the shape a real dirt pedal has — with a bass
+preamp's MID and FREQ beside it, since 5.0.0, because a form no golden carries is a form nothing pins.
 
 ```
 Golden Drive        pedal, tone_type "crunch"
@@ -10,6 +11,10 @@ Golden Drive        pedal, tone_type "crunch"
   tone              TONE, `positions`: linear, never captured — six swept positions shipped as a curve
   bass              TONE, `sections`: the same kind of knob, shipped as two parametric bands
   edge              TONE, a SWITCH shipping bands: two named positions, each stating its own filter
+  mid               TONE, `sections`: one bell whose frequency is not its own — `hz_by: "freq"`
+  freq              TONE, a frequency DIAL (`positions[].hz`): where mid's bell sits, 220 Hz to 3 kHz
+  presence          TONE, `sections`: a high shelf moved by `shift`
+  shift             TONE, a frequency SWITCH stating Q as well: three panel words, no norm
 ```
 
 A player does two different things with the first two knobs:
@@ -22,7 +27,13 @@ A player does two different things with the first two knobs:
 no `sweep` and therefore no `norm` anywhere — its positions have an order and no angle — and each
 position states the filter it IS. Its reference, `sharp`, ships `"sections": []`: at the anchor the
 models already are the sound, and the empty list says so out loud. A player picks the position whose
-`value` matches and interpolates nothing, because a switch has nothing in between. Interpolating
+`value` matches and interpolates nothing, because a switch has nothing in between.
+
+**freq** and **shift** are the fourth form: knobs with no sound of their own, whose positions say where
+another knob's band sits. `mid`'s bell names `freq`, and `presence`'s shelf names `shift`; at each
+FREQ's reference the band is exactly where its own `hz` (and, for `shift`, its `q`) says. A player turns
+`freq` and the bell moves — geometrically against `norm` on the dial, by `value` on the switch — while
+the band's gain still runs on its own knob. Interpolating
   between positions is what makes the first a continuous knob out of six measurements; the second is
   continuous by construction — its bands' gain runs with the dial.
 

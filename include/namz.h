@@ -60,10 +60,10 @@
 #ifndef NAMZ_H
 #define NAMZ_H
 
-#define NAMZ_VERSION_MAJOR 4
-#define NAMZ_VERSION_MINOR 4
-#define NAMZ_VERSION_PATCH 1
-#define NAMZ_VERSION "4.4.1"
+#define NAMZ_VERSION_MAJOR 5
+#define NAMZ_VERSION_MINOR 0
+#define NAMZ_VERSION_PATCH 0
+#define NAMZ_VERSION "5.0.0"
 
 #include <cstddef>
 #include <cstdint>

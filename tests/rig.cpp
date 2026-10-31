@@ -634,6 +634,405 @@ int main()
         }
     }
 
+    // --- TONE, the fourth form: `positions[].hz` — a knob that moves ANOTHER knob's band --------------
+    // A bass preamp's MID is a bell's gain and the FREQ under it moves that bell's centre: the bell just
+    // moves. FREQ has no sound of its own, so it ships where the band sits, and the band names it.
+    {
+        auto manifestWith = [] (const std::string& toneJson) {
+            return std::string (R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"preamp",
+                "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","300"]}],
+                "files":[{"file":"a.namz","settings":{"gain":"0"}}],
+                "tone":[)") + toneJson + "]}]}";
+        };
+        // NAMZ-FORMAT.md's worked example, as printed there.
+        const std::string mid = R"({"name":"mid","sweep":300,"placement":"post","reference":"150",
+            "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"}]})";
+        const std::string freq = R"({"name":"freq","sweep":300,"reference":"150",
+            "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800},
+                         {"value":"300","norm":1.0,"hz":3000}]})";
+        {
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (mid + "," + freq), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2, "MID + FREQ: both knobs load");
+            if (r.chain.size() == 1 && r.chain[0].tone.size() == 2)
+            {
+                const auto& m = r.chain[0].tone[0];
+                const auto& f = r.chain[0].tone[1];
+                ok (m.sections.size() == 1 && m.sections[0].hzBy == "freq" && m.sections[0].hz == 800.0,
+                    "the band names the knob that moves it, and keeps its frequency at the reference");
+                ok (isFrequencyKnob (f) && ! isFrequencyKnob (m), "FREQ is a frequency knob; MID is not");
+                ok (f.positions.size() == 3 && f.positions[0].hz == 220.0 && f.positions[1].hz == 800.0
+                    && f.positions[2].hz == 3000.0 && f.positions[2].norm == 1.0 && f.positions[0].q == 0.0,
+                    "…a frequency and a norm per position, and no Q: the band's own Q stands");
+
+                const auto text = writeManifest (r);
+                ok (text.find ("\"hz_by\": \"freq\"") != std::string::npos, "the writer names the owner on the band");
+                const auto parsed = nlohmann::json::parse (text);
+                const auto& knobs = parsed["chain"][0]["tone"];
+                ok (knobs.size() == 2 && knobs[0].value ("placement", "") == "post" && ! knobs[1].contains ("placement"),
+                    "…and places only MID: FREQ has no filter of its own to place");
+                ok (text.find ("\"grid\"") == std::string::npos && text.find ("\"q\": 0.0") == std::string::npos,
+                    "…writes no grid for it, and no Q it does not state");
+                bool again = false;
+                const auto r2 = loadRigManifest (text, &again);
+                ok (again && writeManifest (r2) == text, "write(load(write(x))) is a fixed point, byte for byte");
+                ok (again && r2.chain.size() == 1 && r2.chain[0].tone.size() == 2
+                    && r2.chain[0].tone[0].sections[0].hzBy == "freq" && r2.chain[0].tone[1].positions[1].hz == 800.0
+                    && r2.chain[0].tone[1].reference == "150" && r2.chain[0].tone[1].placement == "post",
+                    "…and field for field");
+            }
+        }
+        // A FREQ that CLICKS, stating Q as well: no sweep, no norm, a value per panel word.
+        {
+            const std::string midQ = R"({"name":"mid","sweep":300,"reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-12.0,12.0],"hz_by":"freq"}]})";
+            const std::string sw = R"({"name":"freq","reference":"800","default":"1600",
+                "positions":[{"value":"220","hz":220,"q":0.7},{"value":"800","hz":800,"q":0.9},
+                             {"value":"1600","label":"1.6k","hz":1600,"q":1.1}]})";
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (midQ + "," + sw), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2, "MID + a FREQ switch: both load");
+            if (r.chain.size() == 1 && r.chain[0].tone.size() == 2)
+            {
+                const auto& f = r.chain[0].tone[1];
+                ok (isFrequencyKnob (f) && f.sweep == 0 && f.defaultValue == "1600" && f.positions.size() == 3
+                    && f.positions[2].q == 1.1 && f.positions[2].label == "1.6k",
+                    "a switch states a frequency and a Q per position, its default a position it has");
+                const auto text = writeManifest (r);
+                ok (text.find ("\"norm\"") == std::string::npos, "…and is written without a norm");
+                bool again = false;
+                const auto r2 = loadRigManifest (text, &again);
+                ok (again && writeManifest (r2) == text, "…and round-trips byte for byte");
+            }
+        }
+        // Where FREQ says nothing about Q, the band's Q is its own knob's — `q_at` included.
+        {
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (R"({"name":"mid","sweep":300,"reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-12.0,12.0],"q_at":[0.6,1.2],"hz_by":"freq"}]},)"
+                + freq), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2 && r.chain[0].tone[0].sections[0].qAtMax == 1.2,
+                "a band keeps its own `q_at` when its frequency knob states no Q");
+        }
+
+        // REFUSED WHOLE — a link a reader would have to guess at.
+        auto refused = [&] (const std::string& toneJson, const char* what) {
+            bool v = true;
+            const auto r = loadRigManifest (manifestWith (toneJson), &v);
+            ok (! v && r.chain.empty(), what);
+        };
+        auto midWith = [] (const std::string& bandExtra) {
+            return std::string (R"({"name":"mid","sweep":300,"reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0])") + bandExtra + "}]}";
+        };
+        const std::string curve = R"({"name":"tone","sweep":300,"reference":"0","grid":{"points":2},
+            "positions":[{"value":"0","norm":0.0,"db":[0,0]},{"value":"300","norm":1.0,"db":[0,-6]}]})";
+        // Each fixture below breaks ONE rule: no stray FREQ beside it that no band names, which would be
+        // refused on its own and prove nothing about the rule the line is about.
+        refused (midWith (R"(,"hz_by":7)"), "`hz_by` that is not a string: refused");
+        refused (midWith (R"(,"hz_by":"")"), "`hz_by` that is an empty name: refused");
+        refused (midWith (R"(,"hz_by":"frequency")"), "`hz_by` naming no knob: refused");
+        refused (midWith (R"(,"hz_by":"tone")") + "," + curve,
+                 "`hz_by` naming a knob of another form: refused");
+        refused (midWith (R"(,"hz_by":"mid")"), "`hz_by` naming the band's own knob: refused");
+        refused (midWith (R"(,"hz_by":"freq")") + "," + freq + "," + freq,
+                 "`hz_by` naming a name two knobs carry: refused");
+        refused (midWith (R"(,"hz_by":"freq","hz_at":[400,1600])") + "," + freq,
+                 "a band with a frequency owner AND its own `hz_at`: two owners, refused");
+        refused (midWith (R"(,"q_at":[0.6,1.2],"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220,"q":0.7},{"value":"150","norm":0.5,"hz":800,"q":0.9},
+                                  {"value":"300","norm":1.0,"hz":3000,"q":1.2}]})",
+                 "a band with its own `q_at` under a knob that states Q: two owners, refused");
+        refused (R"({"name":"mid","sweep":300,"reference":"150","sections":[
+                        {"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"},
+                        {"type":"bell","hz":800,"q":2.0,"range_db":[-3.0,3.0],"hz_by":"freq"}]},)" + freq,
+                 "two bands naming one frequency knob: refused");
+        refused (midWith ("") + "," + freq, "a frequency knob no band names: refused");
+        const std::string pair = midWith (R"(,"hz_by":"freq")") + "," + freq;   // a valid MID + FREQ
+        refused (R"({"name":"edge","reference":"a","positions":[{"value":"a","sections":[]},
+                        {"value":"b","sections":[{"type":"bell","hz":800,"q":0.9,"gain_db":-3.0,"hz_by":"freq"}]}]},)" + pair,
+                 "`hz_by` on a switch position's band: refused, like any travel key there");
+        refused (R"({"name":"edge","reference":"a","positions":[{"value":"a","sections":[]},
+                        {"value":"b","sections":[{"type":"moog_ladder","hz":800,"q":0.9,"gain_db":-3.0},
+                                                 {"type":"bell","hz":800,"q":0.9,"gain_db":-3.0,"hz_by":"freq"}]}]},)" + pair,
+                 "…even behind a band this reader cannot build: refusal does not depend on the order of bands");
+        refused (pair + R"(,{"name":"edge","reference":"a","positions":[{"value":"a","sections":[]},
+                        {"value":"b","sections":[{"type":"moog_ladder","hz":800,"q":0.9,"gain_db":-3.0}]},
+                        {"value":"c","sections":[{"type":"bell","hz":800,"q":0.9,"gain_db":-3.0,"range_db":[-3,3]}]}]})",
+                 "…and behind a position this reader cannot build, the same");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","reference":"b",
+                     "positions":[{"value":"a","hz":220},{"value":"b","hz":220},{"value":"b","hz":800}]})",
+                 "two positions at the reference's address: refused, whichever one a reader would have taken");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","reference":"b",
+                     "positions":[{"value":"a","hz":220},{"value":"b","hz":800},{"value":"a","hz":3000}]})",
+                 "two positions of one value anywhere on a frequency knob: refused");
+        {
+            // A link reaches only into its own stage.
+            bool v = true;
+            const auto r = loadRigManifest (std::string (R"({"format":"orbitrig","chain":[
+                {"kind":"nam","slot":"preamp","files":[{"file":"a.namz","settings":{}}],"tone":[)") + midWith (R"(,"hz_by":"freq")") + R"(]},
+                {"kind":"nam","slot":"amp","files":[{"file":"b.namz","settings":{}}],"tone":[)" + freq + "]}]}", &v);
+            ok (! v && r.chain.empty(), "a band naming another stage's frequency knob names no knob: refused");
+        }
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150","grid":{"points":2},
+                     "positions":[{"value":"0","norm":0.0,"hz":220,"db":[0,0]},{"value":"150","norm":0.5,"hz":800},
+                                  {"value":"300","norm":1.0,"hz":3000}]})",
+                 "a position stating a frequency AND a curve: two forms, refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","reference":"150",
+                     "positions":[{"value":"0","hz":220},{"value":"150","hz":800,"sections":[]}]})",
+                 "a position stating a frequency AND bands: two forms, refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150","grid":{"points":2},
+                     "positions":[{"value":"0","norm":0.0,"db":[0,0]},{"value":"150","norm":0.5,"hz":800},
+                                  {"value":"300","norm":1.0,"hz":3000}]})",
+                 "a knob whose positions disagree about frequency or curve: refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]}],
+                     "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                 "a frequency knob with bands of its own is both forms: refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                 "a frequency SWITCH carrying `norm`: refused, as for every switch");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":810},
+                                  {"value":"300","norm":1.0,"hz":3000}]})",
+                 "the band's `hz` and FREQ's at its reference disagree: one frequency stated twice, refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220,"q":0.7},{"value":"150","norm":0.5,"hz":800,"q":1.0},
+                                  {"value":"300","norm":1.0,"hz":3000,"q":1.2}]})",
+                 "…and so do their Qs, where FREQ states Q: refused");
+
+        // DROPPED — one knob cannot be played, and every reader sees the same.
+        auto loaded = [&] (const std::string& toneJson, bool& v) { return loadRigManifest (manifestWith (toneJson), &v); };
+        auto freqDropped = [&] (const std::string& freqJson, const char* what) {
+            bool v = false;
+            const auto r = loaded (midWith (R"(,"hz_by":"freq")") + "," + freqJson, v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].name == "mid"
+                && r.chain[0].tone[0].sections[0].hzBy.empty() && r.chain[0].tone[0].sections[0].hz == 800.0, what);
+        };
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":0},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a frequency of 0: FREQ dropped, and the band stays at its own `hz`");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":-220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a negative frequency: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":"220"},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a frequency in a string: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":220,"q":0.7},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a Q on some positions and not others: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":220,"q":0},{"value":"150","norm":0.5,"hz":800,"q":0.9}]})",
+                     "a Q of 0: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"150","norm":0.5,"hz":800},{"value":"0","norm":0.0,"hz":220}]})",
+                     "norms not ascending: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.5,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "two positions at one norm leave nothing to interpolate between: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"150","norm":0.5,"hz":800},{"value":"300","norm":1.5,"hz":3000}]})",
+                     "a norm past 1: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"100",
+                        "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a reference that names no position: dropped, the band at its own `hz`");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150","positions":[{"value":"150","norm":0.5,"hz":800}]})",
+                     "one position cannot move anything: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":"0.25","hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a norm in a string is not a 0.0 nobody wrote: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":null,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a null norm: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":false,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a boolean norm: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":-0.1,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a negative norm: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a position with no `hz` states no frequency — not another form: dropped, not refused");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":220,"q":null},{"value":"150","norm":0.5,"hz":800,"q":null}]})",
+                     "a null Q on every position: dropped");
+        {
+            // `placement`, `grid` and `trusted` are not read on a frequency knob — whatever they hold.
+            bool v = false;
+            const auto r = loaded (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                "placement":"sideways","grid":{"points":3},"trusted":{"lo_hz":1,"hi_hz":0,"levels":5},
+                "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})", v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2 && r.chain[0].tone[1].placement == "post"
+                && r.chain[0].tone[1].grid.points == 0 && r.chain[0].tone[1].trusted.levels == 0,
+                "an unknown placement, a grid and a failed trusted band on FREQ are ignored, not obeyed");
+        }
+        {
+            // A knob without a name is dropped, whatever its form — a frequency knob too.
+            bool v = false;
+            const auto r = loaded (midWith ("") + R"(,{"sweep":300,"reference":"150",
+                "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})", v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].name == "mid",
+                "a nameless frequency knob is dropped like any nameless knob, not refused as one nobody names");
+            const auto dup = loaded (midWith ("") + R"(,{"sweep":300,"reference":"150",
+                "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"0","norm":0.5,"hz":800}]})", v);
+            ok (v && dup.chain.size() == 1 && dup.chain[0].tone.size() == 1 && dup.chain[0].tone[0].name == "mid",
+                "…even with two positions of one value: a knob with no name is dropped, not judged");
+        }
+        {
+            // Two pairs in one stage, each band naming its own frequency knob.
+            bool v = false;
+            const auto r = loaded (pair + R"(,{"name":"treble","sweep":300,"reference":"0",
+                "sections":[{"type":"high_shelf","hz":3000,"q":0.7,"range_db":[0.0,12.0],"hz_by":"bright"}]},
+                {"name":"bright","reference":"3k","positions":[{"value":"3k","hz":3000,"q":0.7},{"value":"6k","hz":6000,"q":0.9}]})", v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 4 && r.chain[0].tone[2].sections[0].hzBy == "bright"
+                && isFrequencyKnob (r.chain[0].tone[3]), "two MID/FREQ pairs in one stage: both load");
+        }
+        {
+            // `hz_by` on knob-level sections that have no sweep: that knob is dropped, as it always was, and
+            // its frequency knob goes with it — dropped, not refused.
+            bool v = false;
+            const auto r = loaded (R"({"name":"mid","reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"}]},)" + freq, v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.empty(),
+                "`hz_by` on a sections knob with no sweep: the knob and its FREQ are dropped");
+        }
+        {
+            bool v = false;
+            const auto r = loaded (R"({"name":"mid","sweep":300,"reference":"noon",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"}]},)" + freq, v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.empty(),
+                "a band's knob that is dropped takes its frequency knob with it: nothing left to move");
+        }
+
+        // THE WRITER never emits a link its reader refuses. What it cannot stand behind comes out as the
+        // loader would make of it — the band at its own frequency, no FREQ — and the pack loads.
+        {
+            auto makeRig = [] {
+                Rig rig;
+                Stage st;
+                st.kind = StageKind::Nam; st.rawKind = "nam";
+                st.device.files = { { "a.namz", { { "gain", "0" } } } };
+                Tone mid;
+                mid.name = "mid"; mid.sweep = 300; mid.reference = "150";
+                Section b;
+                b.kind = SectionKind::Bell; b.hz = 800.0; b.q = 0.9; b.dbAtMin = -15.0; b.dbAtMax = 15.0; b.hzBy = "freq";
+                mid.sections.push_back (b);
+                Tone f;
+                f.name = "freq"; f.sweep = 300; f.reference = "150";
+                const char* values[] = { "0", "150", "300" };
+                const double norms[] = { 0.0, 0.5, 1.0 }, hzs[] = { 220.0, 800.0, 3000.0 };
+                for (int i = 0; i < 3; ++i)
+                {
+                    TonePosition p;
+                    p.value = values[i]; p.norm = norms[i]; p.hz = hzs[i];
+                    f.positions.push_back (p);
+                }
+                st.tone = { mid, f };
+                rig.chain.push_back (st);
+                return rig;
+            };
+            auto check = [&] (const Rig& rig, bool linked, const char* what) {
+                const auto text = writeManifest (rig);
+                bool v = false;
+                const auto r = loadRigManifest (text, &v);
+                const bool loads = v && r.chain.size() == 1 && ! r.chain[0].tone.empty() && r.chain[0].tone[0].name == "mid";
+                if (linked)
+                    ok (loads && r.chain[0].tone.size() == 2 && r.chain[0].tone[0].sections[0].hzBy == "freq", what);
+                else
+                    ok (loads && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].sections[0].hzBy.empty()
+                        && text.find ("\"freq\"") == std::string::npos, what);
+                return text;
+            };
+            check (makeRig(), true, "a valid pair is written whole and loads whole");
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[0].sections[0].hzAtMin = 400.0;
+                rig.chain[0].tone[0].sections[0].hzAtMax = 1600.0;
+                const auto text = check (rig, true, "(a) `hz_by` and `hz_at` both set: the pack still loads, linked");
+                ok (text.find ("hz_at") == std::string::npos, "…without the band's own frequency travel");
+            }
+            {
+                auto rig = makeRig();
+                for (auto& p : rig.chain[0].tone[1].positions) p.q = p.value == "150" ? 0.9 : 1.1;
+                rig.chain[0].tone[0].sections[0].qAtMin = 0.6;
+                rig.chain[0].tone[0].sections[0].qAtMax = 1.2;
+                const auto text = check (rig, true, "(a) `q_at` under a FREQ that states Q: loads, linked");
+                ok (text.find ("q_at") == std::string::npos, "…without the band's own Q travel");
+            }
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[0].sections[0].hzBy.clear();
+                check (rig, false, "(b) a FREQ no band names is not written: the pack loads without it");
+            }
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[0].sweep = 0;                 // its bands cannot be written, so nothing names FREQ
+                const auto text = writeManifest (rig);
+                bool v = false;
+                const auto r = loadRigManifest (text, &v);
+                ok (v && r.chain.size() == 1 && r.chain[0].tone.empty() && text.find ("\"freq\"") == std::string::npos,
+                    "(b) a FREQ whose band's knob is not written is not written either: the pack loads");
+            }
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[1].positions[1].hz = 810.0;
+                check (rig, false, "(c) FREQ disagreeing with the band at its reference: no link written, the pack loads");
+            }
+            {
+                auto rig = makeRig();
+                for (auto& p : rig.chain[0].tone[1].positions) p.q = p.value == "150" ? 1.0 : 1.1;
+                check (rig, false, "(c) …the same for a Q that disagrees");
+            }
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[1].positions[0].hz = 0.0;
+                check (rig, false, "(d) a FREQ whose first frequency is 0 is not written — not even as a curve knob");
+            }
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[1].positions[2].q = 1.2;
+                check (rig, false, "(e) a Q on some positions only: FREQ not written, the pack loads");
+            }
+            {
+                auto rig = makeRig();
+                rig.chain[0].tone[1].positions[1].hz = 0.0;
+                check (rig, false, "(e) a middle frequency of 0: FREQ not written, the pack loads");
+            }
+            {
+                // Knob-level bands are the form a producer CHOSE, and a stray band list left on one of the
+                // knob's positions does not make it a switch: MID is written as the dial it is, and the
+                // link with it — never its FREQ alone, which the reader refuses.
+                auto rig = makeRig();
+                rig.chain[0].tone[0].positions.resize (1);
+                rig.chain[0].tone[0].positions[0].sections.emplace_back();
+                check (rig, true, "(f) MID with knob-level bands and a stray position band: written linked, loads");
+            }
+            {
+                // A knob holding a CURVE is a curve knob, whatever a stray frequency on one of its
+                // positions says: the measured ladder is written, not deleted as an unlinked FREQ.
+                Rig rig;
+                Stage st;
+                st.kind = StageKind::Nam; st.rawKind = "nam";
+                st.device.files = { { "a.namz", { { "gain", "0" } } } };
+                Tone c;
+                c.name = "tone"; c.sweep = 300; c.reference = "300"; c.grid.points = 2;
+                TonePosition p0, p1;
+                p0.value = "0";   p0.norm = 0.0; p0.db = { -3.0, -6.0 }; p0.hz = 5.0;
+                p1.value = "300"; p1.norm = 1.0; p1.db = { 0.0, 0.0 };
+                c.positions = { p0, p1 };
+                st.tone = { c };
+                rig.chain.push_back (st);
+                const auto text = writeManifest (rig);
+                bool v = false;
+                const auto r = loadRigManifest (text, &v);
+                ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].positions.size() == 2
+                    && r.chain[0].tone[0].positions[0].db == std::vector<double> { -3.0, -6.0 }
+                    && text.find ("\"hz\"") == std::string::npos,
+                    "a curve knob with a stray position frequency is written as the curve it holds");
+            }
+        }
+    }
+
     // --- THE SCHEMA GATE — written with the format, read by nobody, tested for the first time here --
     {
         auto withSchema = [] (const std::string& schema) {
@@ -656,6 +1055,14 @@ int main()
         v = true;
         r = loadRigManifest (withSchema ("\"4\""), &v);
         ok (! v && r.chain.empty(), "a string schema is refused too");
+        // Asked of the integer AS WRITTEN: read through a signed type, 2^64-1 was -1 and 2^63 was the most
+        // negative number there is — both "older than this reader", both through the gate.
+        for (const char* s : { "18446744073709551615", "9223372036854775808", "-3", "0" })
+        {
+            v = true;
+            r = loadRigManifest (withSchema (s), &v);
+            ok (! v && r.chain.empty(), "a schema that is no vintage — 2^64-1, 2^63, below 1 — is refused");
+        }
     }
 
     // --- `lag_samples`: a reading or nothing, never a guess --------------------------------------
@@ -673,6 +1080,103 @@ int main()
             ok (! f[0].lagSamples.has_value(), "no key = not measured, not zero");
             ok (! f[1].lagSamples.has_value(), "2.5 samples is not a reading this format speaks: not read");
             ok (f[2].lagSamples == 4, "an integer is the reading");
+        }
+    }
+
+    // --- `input_lag_samples` / `polarity`: the model against its own input, measured or not ------------
+    // Absolute where `lag_samples` is relative, and what a player that mixes the clean input with the
+    // model needs to line the two up and sum them in phase. A reading or nothing — never a refusal.
+    {
+        const std::string text = R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"preamp",
+            "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","150","300"]}],
+            "files":[{"file":"a.namz","settings":{"gain":"0"}},
+                     {"file":"b.namz","settings":{"gain":"150"},"lag_samples":0,"input_lag_samples":0,"polarity":1},
+                     {"file":"c.namz","settings":{"gain":"300"},"lag_samples":3,"input_lag_samples":37,"polarity":-1},
+                     {"file":"d.namz","settings":{"gain":"0"},"input_lag_samples":-48000,"polarity":-1},
+                     {"file":"e.namz","settings":{"gain":"0"},"input_lag_samples":48000},
+                     {"file":"f.namz","settings":{"gain":"0"},"input_lag_samples":12.5,"polarity":0},
+                     {"file":"g.namz","settings":{"gain":"0"},"input_lag_samples":"12","polarity":2},
+                     {"file":"h.namz","settings":{"gain":"0"},"input_lag_samples":48001,"polarity":-1.0},
+                     {"file":"i.namz","settings":{"gain":"0"},"input_lag_samples":-48001,"polarity":"-1"},
+                     {"file":"j.namz","settings":{"gain":"0"},"input_lag_samples":18446744073709551615,
+                                                              "polarity":18446744073709551615},
+                     {"file":"k.namz","settings":{"gain":"0"},"input_lag_samples":true,"polarity":true}]}]})";
+        bool v = false;
+        const auto r = loadRigManifest (text, &v);
+        ok (v && r.chain.size() == 1 && r.chain[0].device.files.size() == 11,
+            "eleven files, and no unreadable lag or polarity refuses the manifest");
+        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 11)
+        {
+            const auto& f = r.chain[0].device.files;
+            ok (! f[0].inputLagSamples && ! f[0].polarity, "no keys = not measured, not zero and not in phase");
+            ok (f[1].inputLagSamples == 0 && f[1].polarity == 1, "0 samples is a reading, and so is +1");
+            ok (f[2].inputLagSamples == 37 && f[2].polarity == -1 && f[2].lagSamples == 3,
+                "an absolute lag and an inversion, beside the relative lag: both keys, each its own reading");
+            ok (f[3].inputLagSamples == -48000 && f[4].inputLagSamples == 48000 && ! f[4].polarity,
+                "the bound is inclusive both ways, and one key does not need the other");
+            ok (! f[5].inputLagSamples && ! f[5].polarity, "12.5 samples and a polarity of 0: not readings");
+            ok (! f[6].inputLagSamples && ! f[6].polarity, "a lag in a string and a polarity of 2: not readings");
+            ok (! f[7].inputLagSamples && ! f[7].polarity, "a lag past the bound and -1.0: not readings");
+            ok (! f[8].inputLagSamples && ! f[8].polarity, "a lag past the bound below and \"-1\": not readings");
+            ok (! f[9].inputLagSamples && ! f[9].polarity,
+                "2^64-1 is not -1: an unsigned integer is judged as what it is");
+            ok (! f[10].inputLagSamples && ! f[10].polarity, "booleans are not readings");
+
+            const auto out = writeManifest (r);
+            bool again = false;
+            const auto r2 = loadRigManifest (out, &again);
+            ok (again && writeManifest (r2) == out, "write(load(write(x))) is a fixed point, byte for byte");
+            if (again && r2.chain.size() == 1 && r2.chain[0].device.files.size() == 11)
+            {
+                const auto& g = r2.chain[0].device.files;
+                ok (g[1].inputLagSamples == 0 && g[1].polarity == 1 && g[2].inputLagSamples == 37 && g[2].polarity == -1
+                    && g[3].inputLagSamples == -48000 && ! g[0].inputLagSamples && ! g[0].polarity && ! g[5].polarity,
+                    "…read back field for field: 0 stays a reading, absent stays absent");
+            }
+            const auto lag = out.find ("\"lag_samples\": 3"), abs = out.find ("\"input_lag_samples\": 37"),
+                       pol = out.find ("\"polarity\": -1");
+            ok (out.find ("\"input_lag_samples\": 0") != std::string::npos && lag != std::string::npos
+                && abs != std::string::npos && pol != std::string::npos && lag < abs && abs < pol,
+                "written on the file entry, after the relative lag");
+        }
+        // The writer never ships a reading its reader would drop.
+        Rig rig;
+        Stage st;
+        st.kind = StageKind::Nam; st.rawKind = "nam";
+        st.device.files = { { "a.namz", { { "gain", "0" } } } };
+        st.device.files[0].inputLagSamples = kMaxLagSamples + 1;
+        st.device.files[0].lagSamples = -kMaxLagSamples - 1;
+        st.device.files[0].polarity = 0;
+        rig.chain.push_back (st);
+        const auto junk = writeManifest (rig);
+        ok (junk.find ("lag_samples") == std::string::npos && junk.find ("polarity") == std::string::npos,
+            "lags past the bound and a polarity of 0 are not written");
+    }
+
+    // --- both lags are integers inside ±kMaxLagSamples, asked of the token as written --------------------
+    {
+        const std::string text = R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"preamp",
+            "files":[{"file":"a.namz","settings":{},"lag_samples":4294967297},
+                     {"file":"b.namz","settings":{},"lag_samples":18446744073709551615},
+                     {"file":"c.namz","settings":{},"lag_samples":48001},
+                     {"file":"d.namz","settings":{},"lag_samples":-48001},
+                     {"file":"e.namz","settings":{},"lag_samples":48000},
+                     {"file":"f.namz","settings":{},"lag_samples":-48000},
+                     {"file":"g.namz","settings":{},"lag_samples":3.0,"input_lag_samples":37.0,"polarity":1.0},
+                     {"file":"h.namz","settings":{},"input_lag_samples":0.0,"polarity":-1.0}]}]})";
+        bool v = false;
+        const auto r = loadRigManifest (text, &v);
+        ok (v && r.chain.size() == 1 && r.chain[0].device.files.size() == 8, "eight files, the manifest loads");
+        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 8)
+        {
+            const auto& f = r.chain[0].device.files;
+            ok (! f[0].lagSamples, "4294967297 is not a lag of 1: dropped");
+            ok (! f[1].lagSamples, "2^64-1 is not a lag of -1: dropped");
+            ok (! f[2].lagSamples && ! f[3].lagSamples, "a lag past ±48000: dropped");
+            ok (f[4].lagSamples == 48000 && f[5].lagSamples == -48000, "the bound itself is a reading");
+            ok (! f[6].lagSamples && ! f[6].inputLagSamples && ! f[6].polarity
+                && ! f[7].inputLagSamples && ! f[7].polarity,
+                "3.0, 37.0, 0.0, 1.0 and -1.0 are float tokens, not integers: none is a reading");
         }
     }
 

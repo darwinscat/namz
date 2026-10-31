@@ -92,8 +92,18 @@ using Settings = std::map<std::string, std::string>;
 // the pack plays the reference, silently. That is the same failure 2→3 was raised for. The same bump
 // carries the two rules that make the form honest: `norm` exists only where rotation exists, and a
 // blend's per-position gains are stated rather than derived from an array index.
+// Bumped to 5 when a knob learned to move ANOTHER knob's band: a FREQ under a MID, whose positions state
+// where the band sits (`positions[].hz`) while the band names it (`hz_by`). A schema-4 reader meets the
+// frequency knob, finds no `grid`, never reads its positions, drops it as a knob carrying neither form and
+// plays the band at one frequency — the author declared a knob and the pack plays without it, silently,
+// which is the failure 3→4 was raised for.
 // See NAMZ-FORMAT.md.
-inline constexpr int kRigSchema = 4;
+inline constexpr int kRigSchema = 5;
+
+// The most `lag_samples` and `input_lag_samples` may say, either way: one second at 48 kHz. A model that
+// far behind its input — or behind its sibling — is not a latency but a broken capture, and a player that
+// believed the number would allocate the delay line it asks for.
+inline constexpr int kMaxLagSamples = 48000;
 
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
@@ -218,8 +228,19 @@ struct FileEntry
     // against the first), and writes it on every entry it measured — the first file's own is 0. A player
     // delays each model by the largest lag minus its own, so any pair sums in phase. Not stated = not
     // measured: a player that crossfades must measure for itself, and a stage where some entries carry
-    // it and some do not is not measured either.
+    // it and some do not is not measured either. The loader reads only an integer within ±kMaxLagSamples.
     std::optional<int> lagSamples;
+    // HOW MANY SAMPLES LATER than its own INPUT this model's output arrives, at the file's own sample
+    // rate; negative = earlier. ABSOLUTE, where `lagSamples` is relative to the stage's first file — so
+    // each entry stands alone — and both may be present: neither is computed from the other. And whether
+    // that output is INVERTED against the input: +1 in phase, -1 inverted. Measured once by the capture
+    // side from the sweep it shoots beside each take (the impulse response's leading edge: its place is
+    // the lag, its sign the polarity). A player that mixes the clean input with the model — a bass
+    // crossover — delays the clean by the lag (a negative lag delays the model) and multiplies it by the
+    // polarity, so the two sum in phase. Not stated = not measured; the loader reads only an integer
+    // within ±kMaxLagSamples, and only +1 or -1.
+    std::optional<int> inputLagSamples;
+    std::optional<int> polarity;
     // HOW THIS MODEL WAS TRAINED: the epochs its weights have, and the ESR (error-to-signal ratio, lower
     // is closer) the trainer reported for it. Written by the capture side from its own records, for a
     // person reading the pack; a player plays the same either way. Not stated = not known.
@@ -531,6 +552,12 @@ struct TonePosition
     // …or, instead of that curve, the bands this position IS (a switch shipping as bands). Exclusive
     // with `db`: a position states one description of itself, for the same reason a knob does.
     std::vector<PositionSection> sections;
+    // …or, on a FREQUENCY knob, where the band it moves sits here: its frequency in Hz, and its Q when the
+    // knob states one (0 = this knob leaves the Q to the band's own knob). A frequency knob has no sound
+    // of its own — a FREQ under a MID: at MID's reference the bell is flat wherever FREQ points — so it
+    // carries neither a curve nor bands, only this. Exclusive with both, for the same reason again.
+    double hz = 0.0;
+    double q  = 0.0;
 };
 
 // The log-spaced frequency grid `TonePosition::db` is sampled on. points == 0 → a `positions` knob is
@@ -612,6 +639,13 @@ struct Section
     // spelling here and write→load is field-exact.
     double hzAtMin = 0.0, hzAtMax = 0.0;
     double qAtMin  = 0.0, qAtMax  = 0.0;
+    // `hz_by`: the frequency knob (a Tone of the same stage, by name) that sets this band's frequency —
+    // and its Q, when that knob states one — instead of `t`. Empty = this knob owns the frequency, as
+    // above. A band naming one carries no `hz_at` (two owners of one frequency); its gain still runs on
+    // `t`. The loader guarantees the link: the knob exists, is a frequency knob, moves this band and no
+    // other, and agrees with `hz` (and `q`) at its reference; a frequency knob that was dropped leaves
+    // this empty, and the band plays at its own `hz`.
+    std::string hzBy;
 };
 
 struct Tone
@@ -645,6 +679,15 @@ struct Tone
     // switch says the same thing per position instead (TonePosition::sections, ToneShape above).
     std::vector<Section> sections;
 };
+
+// A FREQUENCY knob — the fourth form, `positions[].hz`: its positions say where ANOTHER knob's band sits
+// (the band names it in Section::hzBy). It has no filter of its own, so `placement`, `grid` and
+// `trusted` mean nothing on it. A dial interpolates the frequency geometrically against `norm` and the Q
+// linearly, holding past the outermost position; a switch takes the position whose `value` matches.
+inline bool isFrequencyKnob (const Tone& t)
+{
+    return ! t.positions.empty() && t.sections.empty() && t.positions.front().hz > 0.0;
+}
 
 // ---------------------------------------------------------------------------------------------
 // `blend` — a dry/wet mix knob, the third kind of control and neither of the other two.

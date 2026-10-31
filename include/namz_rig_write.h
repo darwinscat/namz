@@ -252,6 +252,55 @@ namespace detail
         }
         out += '\n'; out += ind; out += '}';
     }
+
+    // THE FORM A MODEL KNOB IS WRITTEN IN — decided once, here, and asked by everything that needs it:
+    // the link pass and the emitter must not disagree about whether a knob is written, or a link is
+    // written to a knob that is not. `None` = not written at all.
+    //   * knob-level `sections` win — the form a producer CHOSE; a stray band list left on a position does
+    //     not make a dial a switch — and need a sweep, the travel law running on rotation;
+    //   * bands per position are a switch's form, and a dial does not get them;
+    //   * a knob holding a CURVE (a grid, or a curve on any position) is a curve knob, whatever a stray
+    //     frequency on a position says: a measured ladder is never thrown away as an unlinked FREQ;
+    //   * otherwise a frequency on any position makes a FREQUENCY knob (a 0 on the first one does not
+    //     turn it into a curve knob with no curve).
+    enum class WrittenForm { None, Sections, PositionSections, Frequency, Curves };
+    inline WrittenForm writtenForm (const Tone& t)
+    {
+        if (t.name.empty()) return WrittenForm::None;
+        if (! t.sections.empty()) return t.sweep > 0 ? WrittenForm::Sections : WrittenForm::None;
+        if (t.positions.empty()) return WrittenForm::None;
+        bool bands = false, curve = t.grid.points > 0, hz = false;
+        for (const auto& p : t.positions)
+        {
+            bands = bands || ! p.sections.empty();
+            curve = curve || ! p.db.empty();
+            hz    = hz    || p.hz != 0.0;
+        }
+        if (bands) return t.sweep > 0 ? WrittenForm::None : WrittenForm::PositionSections;
+        if (hz && ! curve) return WrittenForm::Frequency;
+        return WrittenForm::Curves;
+    }
+
+    // …and one the loader keeps: a name, two positions or more with unique non-empty values, a strictly
+    // positive frequency on every one, a Q on all or none, its reference among them, and on a dial norms
+    // inside 0…1 and strictly ascending.
+    inline bool frequencyKnobPlayable (const Tone& t)
+    {
+        if (t.positions.size() < 2 || writtenForm (t) != WrittenForm::Frequency) return false;
+        const bool withQ = t.positions.front().q > 0.0;
+        bool hasReference = false;
+        for (std::size_t i = 0; i < t.positions.size(); ++i)
+        {
+            const auto& p = t.positions[i];
+            if (p.value.empty() || ! std::isfinite (p.hz) || ! (p.hz > 0.0)) return false;
+            if (withQ ? ! (std::isfinite (p.q) && p.q > 0.0) : p.q != 0.0) return false;
+            if (t.sweep > 0 && (! std::isfinite (p.norm) || p.norm < 0.0 || p.norm > 1.0
+                                || (i > 0 && ! (p.norm > t.positions[i - 1].norm)))) return false;
+            for (std::size_t k = 0; k < i; ++k) if (t.positions[k].value == p.value) return false;
+            hasReference = hasReference || p.value == t.reference;
+        }
+        return hasReference;
+    }
 } // namespace detail
 
 // rig.json text — the pack's source of truth (loadRigManifest is the exact inverse for every field
@@ -325,7 +374,14 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 fj["settings"] = std::move (s);
                 if (fe.inputDb < -0.0005 || fe.inputDb > 0.0005)
                     fj["input_db"] = std::round (fe.inputDb * 100.0) / 100.0;
-                if (fe.lagSamples) fj["lag_samples"] = *fe.lagSamples;   // 0 is a reading; absent is none
+                // 0 is a reading; absent is none. Both lags are written only where the loader would read
+                // them back, so a pack never carries a reading its reader drops.
+                if (fe.lagSamples && *fe.lagSamples >= -kMaxLagSamples && *fe.lagSamples <= kMaxLagSamples)
+                    fj["lag_samples"] = *fe.lagSamples;
+                if (fe.inputLagSamples && *fe.inputLagSamples >= -kMaxLagSamples
+                                       && *fe.inputLagSamples <= kMaxLagSamples)
+                    fj["input_lag_samples"] = *fe.inputLagSamples;
+                if (fe.polarity && (*fe.polarity == 1 || *fe.polarity == -1)) fj["polarity"] = *fe.polarity;
                 if (fe.epochs)     fj["epochs"]      = *fe.epochs;
                 if (fe.esr)        fj["esr"]         = *fe.esr;
                 files.push_back (std::move (fj));
@@ -337,29 +393,63 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
             // knob, so a writer that emitted both would produce a pack nothing can load. `sections` wins
             // because it is the form a producer CHOSE: the ladder is what the bands were fitted to, and
             // a model still holding it beside the fit has not un-chosen anything.
+            // THE LINKS, judged on the model before a byte is written: the loader refuses a pack whose
+            // links are broken as written, so a link this writer cannot stand behind is not written at
+            // all. A band keeps its `hz_by` only when it names a frequency knob the loader will keep,
+            // unique by name, named by no other written band, and agreeing with the band at its
+            // reference; a frequency knob is written only when such a band names it. Anything else
+            // comes out as what the loader would make of it: the band at its own frequency, no FREQ.
+            // Only what is WRITTEN counts — a knob's name, a band's link — and whether a knob is written
+            // is detail::writtenForm's answer, the same one the emitter below acts on.
+            std::map<std::string, int> toneNames, namedBy;
+            for (const auto& t : st.tone)
+            {
+                const auto form = detail::writtenForm (t);
+                if (form == detail::WrittenForm::None) continue;
+                ++toneNames[t.name];
+                if (form == detail::WrittenForm::Sections)
+                    for (const auto& sc : t.sections) if (! sc.hzBy.empty()) ++namedBy[sc.hzBy];
+            }
+            auto ownerOf = [&] (const Tone& t, const Section& sc) -> const Tone* {
+                if (sc.hzBy.empty() || detail::writtenForm (t) != detail::WrittenForm::Sections
+                    || namedBy[sc.hzBy] != 1 || toneNames[sc.hzBy] != 1) return nullptr;
+                for (const auto& o : st.tone)
+                {
+                    if (o.name != sc.hzBy) continue;
+                    if (! detail::frequencyKnobPlayable (o)) return nullptr;
+                    for (const auto& p : o.positions)
+                        if (p.value == o.reference)
+                            return p.hz == sc.hz && (p.q == 0.0 || p.q == sc.q) ? &o : nullptr;
+                }
+                return nullptr;
+            };
+            std::map<std::string, bool> linked;
+            for (const auto& t : st.tone)
+                for (const auto& sc : t.sections) if (ownerOf (t, sc) != nullptr) linked[sc.hzBy] = true;
+
             auto tone = nlohmann::ordered_json::array();
             for (const auto& me : st.tone)
             {
-                if (me.name.empty()) continue;
                 // THE FORM IS SAID, NOT COUNTED (Tone::shape). A switch's reference position ships an
                 // empty band list on purpose, so "which vector is empty" cannot decide the form without
-                // rewriting that position into something else on the next pass.
-                const bool asSections = ! me.sections.empty();
-                bool asPosSections = false;
-                for (const auto& p : me.positions) if (! p.sections.empty()) { asPosSections = true; break; }
-                const bool asCurves = ! asSections && ! asPosSections;
-                if (asSections ? me.sections.empty() : me.positions.empty()) continue;
-                // …and a `sections` knob with no sweep is one the reader drops on sight (the travel law
-                // runs on rotation), so writing it would only make a pack that loses a knob in transit.
-                if (asSections && me.sweep <= 0) continue;
-                // Its mirror: bands stated PER POSITION are what a knob with no rotation says instead.
-                // A dial has a travel law and says it that way; letting it use both would leave two
-                // readers to disagree about what happens between two detents.
-                if (asPosSections && me.sweep > 0) continue;
+                // rewriting that position into something else on the next pass. detail::writtenForm
+                // decides it once, for this loop and the link pass above alike: a `sections` knob with no
+                // sweep is one the reader drops on sight (the travel law runs on rotation), and bands
+                // stated PER POSITION are what a knob with no rotation says instead — a dial has a travel
+                // law, and letting it use both would leave two readers to disagree about what happens
+                // between two detents. Neither is written: it would only lose a knob in transit.
+                const auto form = detail::writtenForm (me);
+                if (form == detail::WrittenForm::None) continue;
+                const bool asSections    = form == detail::WrittenForm::Sections;
+                const bool asPosSections = form == detail::WrittenForm::PositionSections;
+                const bool asFrequency   = form == detail::WrittenForm::Frequency;
+                const bool asCurves      = form == detail::WrittenForm::Curves;
+                if (asFrequency && ! linked[me.name]) continue;   // moves nothing the loader would keep
                 nlohmann::ordered_json mj;
                 mj["name"] = me.name;
                 if (me.sweep > 0)            mj["sweep"]     = me.sweep;
-                if (! me.placement.empty())  mj["placement"] = me.placement;
+                // A frequency knob has no filter of its own to place: its band sits where its own knob puts it.
+                if (! me.placement.empty() && ! asFrequency) mj["placement"] = me.placement;
                 if (! me.reference.empty())  mj["reference"] = me.reference;
                 // The loader has always read this; the writer did not emit it, so a pack that stated
                 // where the knob starts lost that fact the first time anything rewrote it — silently,
@@ -392,7 +482,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // a reader that meets a collapsed band ("tested, a filter nowhere") on a knob with no grid
                 // reads it as a verdict on bands it should have played. A dial's `sections` keeps it —
                 // there it is provenance of the ladder the bands were fitted to, and readers know it.
-                if (me.trusted.levels >= 2 && ! asPosSections)
+                if (me.trusted.levels >= 2 && ! asPosSections && ! asFrequency)
                 {
                     nlohmann::ordered_json t;
                     t["lo_hz"]    = me.trusted.loHz;
@@ -418,13 +508,17 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                         // A travel is written as the pair at the two stops. A side the model left at 0
                         // ("does not move") is written as the reference value itself — the same statement
                         // in the pack's vocabulary, where an absent KEY means neither side moves and a
-                        // present one must say both.
-                        if (sc.hzAtMin > 0.0 || sc.hzAtMax > 0.0)
+                        // present one must say both. Under a frequency knob the frequency is that knob's,
+                        // and so is the Q when it states one: the band's own travel for them is not written.
+                        const Tone* owner = ownerOf (me, sc);
+                        if (owner == nullptr && (sc.hzAtMin > 0.0 || sc.hzAtMax > 0.0))
                             x["hz_at"] = nlohmann::ordered_json::array ({ sc.hzAtMin > 0.0 ? sc.hzAtMin : sc.hz,
                                                                   sc.hzAtMax > 0.0 ? sc.hzAtMax : sc.hz });
-                        if (sc.qAtMin > 0.0 || sc.qAtMax > 0.0)
+                        if ((owner == nullptr || owner->positions.front().q == 0.0) && (sc.qAtMin > 0.0 || sc.qAtMax > 0.0))
                             x["q_at"]  = nlohmann::ordered_json::array ({ sc.qAtMin > 0.0 ? sc.qAtMin : sc.q,
                                                                   sc.qAtMax > 0.0 ? sc.qAtMax : sc.q });
+                        // The knob that moves this band's frequency instead, when another one does.
+                        if (owner != nullptr) x["hz_by"] = sc.hzBy;
                         sections.push_back (std::move (x));
                     }
                     mj["sections"] = std::move (sections);
@@ -457,6 +551,13 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                                 bands.push_back (std::move (x));
                             }
                             pj["sections"] = std::move (bands);
+                        }
+                        else if (asFrequency)
+                        {
+                            // Where the band sits here — and its Q, when this knob states one (0 = it
+                            // leaves the Q to the band's own knob, and then no position carries one).
+                            pj["hz"] = p.hz;
+                            if (p.q > 0.0) pj["q"] = p.q;
                         }
                         else
                         {

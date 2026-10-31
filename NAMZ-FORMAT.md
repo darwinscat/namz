@@ -295,7 +295,7 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
 
 ```json
 {
-  "format": "orbitrig", "schema": 4,
+  "format": "orbitrig", "schema": 5,
   "rig_id": "dc-ts9", "name": "Golden Drive", "modeled_by": "Darwin's Cat",
   "picture": "device.webp", "url": "https://darwinscat.com/packs/golden-drive",
   "chain": [
@@ -349,7 +349,7 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     dry/wet mix. One number for the whole stage: applied before the mix it would ride the wet side
     alone and move a blend the player was told to hold.
 
-  Neither key bumps `schema`, which stays 4. They are additive, so a reader that has not met them
+  Neither key needs a schema change on its own. They are additive, so a reader that has not met them
   plays exactly as it plays today — that is the status quo and not a regression. Packs written before
   them, where a device's level was spread across `files[].input_db`, keep playing correctly for the
   same reason: a reader sums the stage level with the file level, and in those packs the stage level
@@ -361,24 +361,49 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     and little else, played through the neighbour above them with less going in. Into the model, not
     out of it: less signal is also less drive, so the dial fades instead of falling into a hole. The
     capture side decides this and writes it down; a player only applies it.
-  - `lag_samples` — how many samples LATER than the stage's first file this model's output arrives on
-    the same input, at the file's own sample rate — an integer, negative = earlier. Two captures of
-    one device come out of training a few samples apart, and a player that crossfades them as they are
-    combs. The capture side measures this once, with every model in hand, and writes it on every entry
-    it measured (the first file's own is 0); a player delays each model by the largest lag minus its
+  - `lag_samples` — how many samples LATER than the stage's first file this model's output arrives on the
+    same input, at the file's own sample rate — a JSON integer token, negative = earlier, at most 48000
+    either way (since 5.0.0; the same bound, for the same reason, as `input_lag_samples` below). Two
+    captures of one device come out of training a few samples apart, and a player that crossfades them as
+    they are combs. The capture side measures this once, with every model in hand, and writes it on every
+    entry it measured (the first file's own is 0); a player delays each model by the largest lag minus its
     own, so any pair sums in phase. Absent = not measured: a player that crossfades must measure for
-    itself, and a stage where some entries carry it and some do not is not measured either.
+    itself, and a stage where some entries carry it and some do not is not measured either. A value of the
+    wrong kind or past the bound is not a reading, and a reader drops it.
+  - `input_lag_samples` — how many samples LATER than its own INPUT this model's output arrives, at the
+    file's own sample rate: a JSON integer token (`37`, never `37.0`), negative = earlier, at most 48000
+    either way. ABSOLUTE, where
+    `lag_samples` is relative to the stage's first file — so each entry stands alone, and a stage where
+    some carry it and some do not is measured exactly where it says so. Both keys may be present, and
+    neither is computed from the other: each answers its own question and is the authority for it. The
+    capture side measures it once, from the sweep it shoots beside each take (the impulse response of the
+    model against the sweep it was fed; its leading edge is the lag). Absent = not measured. A value of
+    the wrong kind (`12.5`, `"12"`) or past the bound is not a statement, and a reader drops it: a model a
+    second late is not a latency but a broken capture, and a player that believed the number would
+    allocate the delay line it asks for.
+  - `polarity` — whether this model's output is INVERTED against that input: `1` in phase, `-1`
+    inverted, as a JSON integer. Nothing else is a reading, and a reader drops anything else (`0`, `2`,
+    `-1.0`, `"-1"`). Measured with `input_lag_samples`, from the same impulse response — the sign of its
+    leading edge — and absent = not measured. Not the `polarity` of a `blend`: that one is the box's own
+    dry path against the model, and this one is the model against what it was fed.
+
+    A player that mixes the clean input with the model itself — a bass crossover, clean lows under a
+    driven top — needs both: it delays the clean by `input_lag_samples` (converted to its own rate when the
+    model runs at another; a negative lag delays the model instead) and multiplies it by `polarity`, and
+    the two sum in phase across the crossover. Without them it must measure for itself, or not offer the
+    mix. A player that does not mix reads neither. Both keys are additive; on their own they would not
+    move `schema`.
   - `epochs` / `esr` — how this model was trained: the number of epochs its weights have (a
     non-negative integer) and the ESR — error-to-signal ratio, lower is closer — the trainer reported
     for it (a number, 0 or more). Written by the capture side from its own records, for a person reading
     the pack; a player plays the same either way. Each is independent, and absent = not known. A value
     of the wrong kind (`800.5` epochs, a negative ESR, a string) is not a statement: a reader drops it.
-    Additive — `schema` stays 4.
+    Additive — these keys alone need no schema change.
 - **`picture`** — the file name, in the pack root, of the device's photograph (`"device.webp"`), for
   players that draw the box they are playing: a cut-out — background removed, alpha kept — scaled and
   encoded (WebP) by the capture side at export; a player only draws it. Optional and additive:
   absent = the pack ships no picture, and a reader that does not know the key plays as before
-  (`schema` stays 4).
+  (these keys alone need no schema change).
 - **`url`** — the PACK's page: where a player can send somebody to hear it, read about it or find the
   packs beside it. Not the device's page — that one belongs to the box and lives in `gear.url`; a
   reader handed a single link cannot tell "buy this pedal" from "get this pack", and the two are drawn
@@ -418,7 +443,7 @@ therefore flat by construction, so a player that ignores `tone` — or a lone `.
 of the pack, which carries no tone block — plays the reference tone, which is exactly what those
 weights encode. Nothing is double-filtered and nothing lies.
 
-**One form per knob, and there are three of them.** A tone knob is described by exactly ONE of:
+**One form per knob, and there are four of them.** A tone knob is described by exactly ONE of:
 
 * `positions[].db` — **the measured ladder**: a dB table per swept position. A dial or a switch.
 * `sections` — **bands travelling on rotation**: the same knob as parametric filters whose gain runs
@@ -426,6 +451,8 @@ weights encode. Nothing is double-filtered and nothing lies.
 * `positions[].sections` — **a filter stated whole at each position**. A SWITCH only. Its positions are
   named, ordered, and have nothing in between them, so there is no rotation for a gain to travel on:
   each position says what it IS, and nothing is computed between two of them.
+* `positions[].hz` — **a knob that moves another knob's band**: a frequency per position and no sound of
+  its own. A dial or a switch.
 
 Exactly one of the two keys `positions` / `sections` is present. A knob carrying both is not a knob with
 a spare description, it is an **invalid manifest**: a reader refuses the whole file, not the knob,
@@ -438,14 +465,14 @@ invalid manifest: that knob is skipped and the reference position plays.
 
 | field | meaning |
 |---|---|
-| `name` / `sweep` | the control and how far it turns, degrees — **`sweep` absent or 0 means a SWITCH**: a player draws a toggle over `positions` and does NOT interpolate between them, because a switch has nothing in between. With a sweep it is a dial: draw a knob and interpolate. A switch ships `positions`, with either `db` or `sections` on each of them; knob-level `sections` needs a sweep, because its travel law is stated in rotation. **A switch has no `norm`** — it has an order and no angle — and a position is addressed by its `value`, never by its place in the array, so a knob that loses a position loses that position and nothing else |
-| `placement` | where the filter goes. `post` — after the whole stage, including after a `blend` mix. `wet` — inside the wet path, before the mix, which is where a tone stack in a blended pedal physically sits: applying such a curve `post` would filter the clean signal the blend exists to keep clean. An unknown value: SKIP the control rather than guess |
+| `name` / `sweep` | the control and how far it turns, degrees — **`sweep` absent or 0 means a SWITCH**: a player draws a toggle over `positions` and does NOT interpolate between them, because a switch has nothing in between. With a sweep it is a dial: draw a knob and interpolate. A switch ships `positions`, with `db`, `sections` or `hz` on each of them; knob-level `sections` needs a sweep, because its travel law is stated in rotation. **A switch has no `norm`** — it has an order and no angle — and a position is addressed by its `value`, never by its place in the array, so a knob that loses a position loses that position and nothing else |
+| `placement` | where the filter goes. `post` — after the whole stage, including after a `blend` mix. `wet` — inside the wet path, before the mix, which is where a tone stack in a blended pedal physically sits: applying such a curve `post` would filter the clean signal the blend exists to keep clean. An unknown value on a knob with a filter of its own: SKIP the control rather than guess. A frequency knob (`positions[].hz`) has no filter to place and carries none: its band sits where the band's own knob puts it, and a `placement` on it is ignored, whatever it holds |
 | `reference` | the position every file was captured at (the description is relative to it). With `positions` it MUST appear in `positions[]`, and its `db[]` MUST be all zeros — that is what "flat by construction" means, and a reader may assert it. A non-zero reference row is a broken pack: the curve would be applied on top of a model that already contains it. With `sections` it is the position where every band's gain is zero — the hinge of the travel law below |
 | `default` | where a player starts the knob. Absent: start at `reference` |
 | `operating_point` | the capture axes held while sweeping — provenance, and the honest limit of the measurement |
-| `grid` | curves only — `positions[].db`: the log-spaced frequency grid they are sampled on. A knob that ships no curve (bands, either form) carries no grid. **Endpoints inclusive**: `f[i] = f_lo · (f_hi/f_lo)^(i / (points − 1))`, so `f[0]` is exactly `f_lo` and `f[points − 1]` exactly `f_hi`. The band-centre convention some analysers use would move the top of an 8-point 20 Hz – 20 kHz grid from 20 kHz to 13 kHz, and every reading with it |
-| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels` — and the SAME band as grid indices, `lo_index`, `hi_index`, which are the authority: the hold rule is applied on the grid, and two readers rounding Hz to an index differently pick neighbouring points, decibels apart on a 30 dB tilt, so the producer says which points it meant. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` — and `lo_index > hi_index`, the same statement in indices — with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at. With knob-level `sections` it is provenance — where the ladder the bands were fitted to held — and nothing to apply: a band is one filter, played whole. **Never present on a `positions[].sections` knob**: it is stated in grid indices, and a reader meeting a collapsed band ("tested, a filter nowhere") on a knob that has no grid reads it as a verdict on bands it should have played |
-| `positions[]` | per position, in the control's own order: its curve (`db`) or its bands (`sections`) — see below |
+| `grid` | curves only — `positions[].db`: the log-spaced frequency grid they are sampled on. A knob that ships no curve (bands, either form, or a frequency knob) carries no grid; on a frequency knob a reader ignores one. **Endpoints inclusive**: `f[i] = f_lo · (f_hi/f_lo)^(i / (points − 1))`, so `f[0]` is exactly `f_lo` and `f[points − 1]` exactly `f_hi`. The band-centre convention some analysers use would move the top of an 8-point 20 Hz – 20 kHz grid from 20 kHz to 13 kHz, and every reading with it |
+| `trusted` | the band where the curve was shown to BE a filter, over what drive range, and how many levels showed it: `lo_hz`, `hi_hz`, `span_db`, `levels` — and the SAME band as grid indices, `lo_index`, `hi_index`, which are the authority: the hold rule is applied on the grid, and two readers rounding Hz to an index differently pick neighbouring points, decibels apart on a 30 dB tilt, so the producer says which points it meant. Outside the band, **hold the curve at the value it has at the nearest band edge** — that is the instruction, and it is one instruction, not two. Absent, or `levels` 1: nothing was tested, trust the whole grid. `hi_hz <= lo_hz` — and `lo_index > hi_index`, the same statement in indices — with `levels` 2 or more: tested and **failed everywhere** — do not apply this curve at all. `span_db` is the drive range actually swept (loudest weighed rung minus quietest), and `levels` is the FEWEST any single position was weighed at. With knob-level `sections` it is provenance — where the ladder the bands were fitted to held — and nothing to apply: a band is one filter, played whole. **Never present on a `positions[].sections` or a `positions[].hz` knob** — a reader ignores one there: it is stated in grid indices, and a reader meeting a collapsed band ("tested, a filter nowhere") on a knob that has no grid reads it as a verdict on bands it should have played |
+| `positions[]` | per position, in the control's own order: its curve (`db`), its bands (`sections`) or, on a frequency knob, where the band it moves sits (`hz`) — see below |
 | `sections[]` | the knob as bands, applied in series — see below. Magnitude-only filters, so their order is immaterial |
 
 #### `positions` — the measured ladder
@@ -459,6 +486,7 @@ Each position carries the **measurement itself**, and nothing else:
 | `db[]` | *(the curve form)* the measured response relative to `reference`, dB per `grid` point. **`20·log10` of an amplitude ratio**, never a power dB — a reader using `10^(db/10)` halves every deviation and nothing complains. Length MUST equal `grid.points`; a position where it does not is unusable and must be skipped, not truncated or padded. REQUIRED |
 | `level_db` | *(the curve form)* that position's broadband level over the trusted band, dB. Derivable from `db[]`, and shipped anyway so that every player agrees what "the same loudness" means instead of each choosing its own band and weighting |
 | `sections[]` | *(the switch's band form)* the filter this position IS — see below. Exclusive with `db`: a position carrying both is two descriptions of one thing, and the manifest is refused, exactly as for a knob carrying both forms |
+| `hz` / `q` | *(the frequency form)* where the band this knob moves sits at this position — see `positions[].hz` below. Exclusive with `db` and `sections`, on the same terms |
 
 A curve, not a filter. There are no bands, no Q, no coefficients here — just a magnitude table, in
 physical units, on a stated frequency grid. Baked coefficients would be wrong at every sample rate
@@ -539,7 +567,8 @@ moves them with the same `t` that moves the gain.
 ```
 
 Optional keys: `pivot` (only on a `tilt`), `hz_at`: `[at the minus stop, at the plus stop]`, `q_at`:
-the same for Q. A key that is absent means the quantity does not move.
+the same for Q, `hz_by`: another knob that sets the frequency instead. A key that is absent means the
+quantity does not move.
 
 | field | meaning |
 |---|---|
@@ -548,6 +577,7 @@ the same for Q. A key that is absent means the quantity does not move.
 | `range_db` | the band's gain at the **minus stop** and at the **plus stop**, in that order, **SIGNED** — a cut is negative. The minus stop is the dial's 0, the plus stop is `sweep`: the order is by POSITION, never by sign, so a band that boosts at 0° carries a positive first entry. (The capture side handles the same pair as two magnitudes ordered by sign — most-cut, most-boost — so the pair may arrive REVERSED as well as unsigned; the pack does neither: `[-8.9, 1.2]` reads as 8.9 dB of cut at 0° and 1.2 dB of boost at full.) On a stop the reference sits on, that stop's entry is 0 — the law leaves it nothing else to be |
 | `pivot` | `tilt` only: where the seesaw hinges, 0…1 — see below. Absent on a tilt: 0.5, the symmetric seesaw. Stored as written; a value outside 0…1 is clamped when applied, as the formula says. On any other `type` it is not read — a reader does not look at it, so it cannot spoil the band |
 | `hz_at` / `q_at` | what `hz` / `q` become at the two stops, `[minus, plus]` — the same order as `range_db`, by position. Both entries strictly positive: a 0 is not a frequency, and a pair a reader cannot read makes the knob unusable (skip the knob). A side where the knob has no travel — `reference` IS that stop — carries the reference value itself. Absent: the quantity is one frozen value across the whole travel |
+| `hz_by` | the `name` of the knob that sets this band's frequency — and its Q, if that knob states one — instead of this knob's travel: a FREQ under a MID. See `positions[].hz` below. Absent: this knob owns the frequency, as above |
 
 **Computing a band.** RBJ cookbook, at the player's sample rate `fs`, with `hz`, `q` and `gain_db` the
 band's values AT THE CURRENT POSITION — all three come from the travel law below, not just the gain:
@@ -636,6 +666,9 @@ and the reference itself is the `t = 0` line — which is why that line comes fi
 Between the stops nothing is held or extrapolated: the knob cannot go past a stop, and every position
 inside is defined. A band is applied whole; `trusted` is provenance here, not an instruction.
 
+A band that carries `hz_by` takes its frequency from that knob's position instead of from `t` — and its Q
+too, where that knob states one. Its gain still runs on `t`, exactly as above.
+
 #### `positions[].sections` — a knob that clicks, stating each filter
 
 A switch's positions are named, ordered, and have **nothing in between them**. There is no rotation for
@@ -659,9 +692,10 @@ IS, against `reference`.
 omitted. At that position the models already are the sound, and an empty list is the statement "flat
 here"; a missing key would be an omission, and the two must not look alike.
 
-**Forbidden here:** `range_db`, `hz_at`, `q_at`. They describe a journey between two stops, and this knob
-has no stops. A manifest carrying one is refused rather than read with the key ignored — a reader that
-ignored it would play a fixed band where the producer thought it wrote a travelling one.
+**Forbidden here:** `range_db`, `hz_at`, `q_at`, `hz_by`. They describe a journey between two stops, and
+this knob has no stops — nor one band for another knob to move: each position is a filter of its own. A
+manifest carrying one is refused rather than read with the key ignored — a reader that ignored it would
+play a fixed band where the producer thought it wrote a travelling one.
 
 **A band this reader cannot build drops the KNOB, never one band** — an unknown `type`, no frequency, no
 Q, a gain that is not a number. Playing the bands understood and dropping the rest is a different pedal;
@@ -671,6 +705,95 @@ playing the reference is what dropping a tone knob has always meant.
 of bands, a different shape — so a player must not ramp band *k*'s coefficients from one position's to
 the next's: that walks through filters neither position contains, and an appearing band clicks. Build
 the new cascade beside the old one and cross-fade the OUTPUT over a few milliseconds.
+
+#### `positions[].hz` — a knob that moves another knob's band
+
+Some panels split one band across two controls. On a bass preamp the MID knob is a bell's gain, and the
+FREQ knob under it moves that bell's centre and does nothing else — the bell just moves. So FREQ has no
+sound of its own: with MID at its reference the bell is flat wherever FREQ points. What it ships is where
+the band sits, per position, and the band names it:
+
+```json
+"tone": [
+  { "name": "mid", "sweep": 300, "placement": "post", "reference": "150",
+    "sections": [
+      { "type": "bell", "hz": 800, "q": 0.9, "range_db": [-15.0, 15.0], "hz_by": "freq" }
+    ] },
+  { "name": "freq", "sweep": 300, "reference": "150",
+    "positions": [
+      { "value": "0",   "norm": 0.0, "hz": 220 },
+      { "value": "150", "norm": 0.5, "hz": 800 },
+      { "value": "300", "norm": 1.0, "hz": 3000 }
+    ] }
+]
+```
+
+A FREQ that clicks — a five-way switch at 220, 450, 800, 1600 and 3000 Hz — is the same list with no
+`sweep` and no `norm`, its `value`s the words on the panel.
+
+| field | meaning |
+|---|---|
+| `hz_by` | on a band of a dial's `sections`: the `name` of the knob, in the same stage's `tone`, that sets this band's frequency — and its Q, where that knob states one. One string, so a band has at most one frequency owner |
+| `positions[].hz` | the band's frequency at this position, Hz: a number, strictly positive. Required on every position: one without it states no frequency, and the knob is unusable |
+| `positions[].q` | the band's Q at this position, strictly positive. On EVERY position or on none: none means the Q stays the band's own (its `q`, travelling on its `q_at` if it has one); some is a knob that says Q at one position and is silent at the next, and is unusable |
+
+**The reference is where the band was measured.** FREQ's `reference` is the position every file was
+captured at, as for every tone knob, and MID's bands were measured with FREQ there. So the band's `hz` and
+FREQ's `hz` at its reference are one frequency stated twice, and they MUST be equal as parsed numbers —
+and the band's `q` and FREQ's reference `q` likewise, where FREQ states Q. Two statements of one frequency that disagree are
+two products, and the manifest is refused. The invariant needs nothing else: at MID's reference the band
+is flat wherever FREQ points, so the files play their own tone at every FREQ position.
+
+**How the band moves.** On a DIAL, between two neighbouring positions `a` and `b`, against `norm`:
+
+```
+u      = (norm − norm_a) / (norm_b − norm_a)
+hz     = hz_a · (hz_b / hz_a) ^ u           (geometric)
+q      = q_a  + (q_b − q_a) · u             (linear)
+```
+
+and outside the outermost `norm`, hold the nearest position. Two positions at the stops move the
+frequency log-evenly across the whole sweep; more positions say where the hardware does otherwise. A
+dial's `norm`s are numbers inside 0…1 and strictly ascending, or there is nothing to interpolate between.
+Every position's `value` is unique: it is the position's address, the reference's above all, and two
+positions at one address are two answers a reader would have to choose between. A
+SWITCH is not interpolated: the position whose `value` matches, nothing in between, and a change of
+position is a change of filter — cross-fade the output, as for `positions[].sections`. The band that
+plays is then: its `type` from itself, its gain from its own knob's travel law, its frequency from FREQ,
+and its Q from FREQ where FREQ states it, from its own knob otherwise.
+
+`placement`, `grid` and `trusted` are not read on a frequency knob, whatever they hold: it has no filter
+of its own for them to describe.
+
+**One owner per quantity.** A band that names a frequency knob carries no `hz_at` — its own knob would be
+a second owner of the same frequency — and, where that knob states Q, no `q_at`. A frequency knob moves
+exactly ONE band: named by none, it is a knob that moves nothing; named by two, one dial would be
+pretending to be two. A frequency knob has no band of its own, so nothing can name it from inside it and
+a link is one step long — there is no chain to close into a cycle. A knob that is both — bands and
+frequencies, or a frequency and a curve on one position — is two forms, refused like any other.
+
+**Refused** — the manifest is invalid, for the reason every refusal in this format has: a reader that
+let it through would have to guess, and two readers would guess differently:
+
+* `hz_by` that is not a string, or names anything but exactly ONE frequency knob of the same stage — no
+  knob, a knob of another form (the band's own knob included), two knobs by that name;
+* `hz_by` on a band of `positions[].sections`;
+* a band naming a frequency knob that also carries `hz_at`, or `q_at` where that knob states Q;
+* two bands naming one frequency knob, or a frequency knob no band names;
+* `hz` on a position beside `db` or `sections`, or a knob whose positions carry two DIFFERENT form keys
+  (one `hz`, another `db`) — a position with none of them is not another form, it is a position stating no
+  frequency, and the knob is dropped (below);
+* two positions of one frequency knob with the same `value`;
+* the band's `hz` — or `q`, where FREQ states Q — not equal, as parsed numbers, to FREQ's at its reference.
+
+**Dropped** — one knob cannot be played, and every reader applying these rules sees the same thing: a
+position whose `hz` (or `q`) is missing or not a strictly positive number, `q` on some positions and not
+others, a dial's `norm` that is not a number (`"0.25"`, `null`), out of 0…1 or not STRICTLY ascending, and
+every rule a `positions` knob already has (its reference missing, one position, no `name`). A missing
+`norm` on a dial stays what it is for every knob: a refused manifest. A frequency knob that is dropped plays its reference: the band stays at
+its own `hz`, and its Q follows its own knob. A band's knob that is dropped takes its frequency knob with it — there is nothing
+left for it to move. The equality above is checked between the two knobs that remain; a frequency knob
+that did not survive has no reference row to compare.
 
 ### `blend` — a dry/wet mix knob
 
@@ -746,7 +869,11 @@ packs plus its boost is still one pedal, and a player may offer them together. I
 part of the family. Nothing in this format requires a reader to act on it; it is there so that the fact
 survives, because it cannot be reconstructed later.
 
-The current `schema` is **4** (3 → 4: a knob that CLICKS learned to ship bands — `positions[].sections`
+The current `schema` is **5** (4 → 5: a knob learned to move ANOTHER knob's band — `positions[].hz`,
+named by a band's `hz_by`. A schema-4 reader meets the frequency knob, finds no `grid`, never reads its
+positions and drops it as a knob carrying neither form, and it plays the band at one frequency: the
+author declared a knob and the pack would play without it, silently — the failure 3 → 4 was raised for.
+3 → 4: a knob that CLICKS learned to ship bands — `positions[].sections`
 — and two rules came with it: `norm` exists only where rotation exists, and a switch blend states both
 gains at every position instead of leaning on a law. A schema-3 reader meets such a knob, finds no
 `grid`, never reads its positions and drops it as a knob carrying neither form: the author declared
@@ -754,8 +881,9 @@ bands and the pack would play the reference, silently. 2 → 3: `measured` becam
 `sections`.) Had the number
 stayed at 2, a schema-2 reader would have found no `measured` key and played every tone knob flat,
 silently — the exact failure the number exists to catch; at 3 it refuses instead. `measured` is not
-read: no pack carrying it was ever published. `schema` is a JSON integer; a reader refuses a manifest
-whose `schema` is anything else, because a number it cannot judge is not a number it may assume.
+read: no pack carrying it was ever published. `schema` is a JSON integer, 1 or more, read as the
+integer it is written as (an unsigned 2^64−1 is not −1); a reader refuses a manifest whose `schema` is
+anything else, because a number it cannot judge is not a number it may assume.
 
 Additive keys never bump `schema`; a bump is reserved for an incompatible change (avoided by
 design). The reference reader/selector is `namz::rig`.
