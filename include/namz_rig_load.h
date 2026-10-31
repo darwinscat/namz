@@ -379,7 +379,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // A frequency knob's positions are addressed by `value` — its reference above all,
                     // which the band's frequency is checked against. Two positions of one value are two
                     // answers to one address, and which one a reader took would be its own choice.
-                    if (asFrequency)
+                    if (asFrequency && ! me.name.empty())   // a nameless knob is dropped, not judged
                     {
                         std::set<std::string> seen;
                         for (const auto& pj : *ps)

@@ -670,7 +670,7 @@ int main()
                 const auto parsed = nlohmann::json::parse (text);
                 const auto& knobs = parsed["chain"][0]["tone"];
                 ok (knobs.size() == 2 && knobs[0].value ("placement", "") == "post" && ! knobs[1].contains ("placement"),
-                    "…and places only MID: FREQ has no filter of its own to place"); 
+                    "…and places only MID: FREQ has no filter of its own to place");
                 ok (text.find ("\"grid\"") == std::string::npos && text.find ("\"q\": 0.0") == std::string::npos,
                     "…writes no grid for it, and no Q it does not state");
                 bool again = false;
@@ -873,6 +873,10 @@ int main()
                 "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})", v);
             ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].name == "mid",
                 "a nameless frequency knob is dropped like any nameless knob, not refused as one nobody names");
+            const auto dup = loaded (midWith ("") + R"(,{"sweep":300,"reference":"150",
+                "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"0","norm":0.5,"hz":800}]})", v);
+            ok (v && dup.chain.size() == 1 && dup.chain[0].tone.size() == 1 && dup.chain[0].tone[0].name == "mid",
+                "…even with two positions of one value: a knob with no name is dropped, not judged");
         }
         {
             // Two pairs in one stage, each band naming its own frequency knob.
@@ -993,6 +997,38 @@ int main()
                 auto rig = makeRig();
                 rig.chain[0].tone[1].positions[1].hz = 0.0;
                 check (rig, false, "(e) a middle frequency of 0: FREQ not written, the pack loads");
+            }
+            {
+                // Knob-level bands are the form a producer CHOSE, and a stray band list left on one of the
+                // knob's positions does not make it a switch: MID is written as the dial it is, and the
+                // link with it — never its FREQ alone, which the reader refuses.
+                auto rig = makeRig();
+                rig.chain[0].tone[0].positions.resize (1);
+                rig.chain[0].tone[0].positions[0].sections.emplace_back();
+                check (rig, true, "(f) MID with knob-level bands and a stray position band: written linked, loads");
+            }
+            {
+                // A knob holding a CURVE is a curve knob, whatever a stray frequency on one of its
+                // positions says: the measured ladder is written, not deleted as an unlinked FREQ.
+                Rig rig;
+                Stage st;
+                st.kind = StageKind::Nam; st.rawKind = "nam";
+                st.device.files = { { "a.namz", { { "gain", "0" } } } };
+                Tone c;
+                c.name = "tone"; c.sweep = 300; c.reference = "300"; c.grid.points = 2;
+                TonePosition p0, p1;
+                p0.value = "0";   p0.norm = 0.0; p0.db = { -3.0, -6.0 }; p0.hz = 5.0;
+                p1.value = "300"; p1.norm = 1.0; p1.db = { 0.0, 0.0 };
+                c.positions = { p0, p1 };
+                st.tone = { c };
+                rig.chain.push_back (st);
+                const auto text = writeManifest (rig);
+                bool v = false;
+                const auto r = loadRigManifest (text, &v);
+                ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].positions.size() == 2
+                    && r.chain[0].tone[0].positions[0].db == std::vector<double> { -3.0, -6.0 }
+                    && text.find ("\"hz\"") == std::string::npos,
+                    "a curve knob with a stray position frequency is written as the curve it holds");
             }
         }
     }
