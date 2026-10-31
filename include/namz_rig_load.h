@@ -49,6 +49,23 @@ namespace detail
         if (auto it = j.find (key); it != j.end() && it->is_number_integer()) return it->get<int>();
         return dflt;
     }
+    // A JSON INTEGER inside [lo, hi], or false. Asked of the value's own kind: a non-negative integer is
+    // parsed as unsigned, and read through a signed type 18446744073709551615 would come back as -1.
+    inline bool jintIn (const nlohmann::json& v, long long lo, long long hi, int& out)
+    {
+        if (v.is_number_unsigned())
+        {
+            const auto u = v.get<unsigned long long>();
+            if (hi < 0 || u > static_cast<unsigned long long> (hi) || static_cast<long long> (u) < lo) return false;
+            out = static_cast<int> (u);
+            return true;
+        }
+        if (! v.is_number_integer()) return false;
+        const auto i = v.get<long long>();
+        if (i < lo || i > hi) return false;
+        out = static_cast<int> (i);
+        return true;
+    }
     // A pair of numbers under `key` — `range_db`, `hz_at`, `q_at`. Absent → false with `a`/`b` untouched;
     // present but not two numbers → also false, and the caller decides whether that spoils the band.
     inline bool jpair (const nlohmann::json& j, const char* key, double& a, double& b)
@@ -246,6 +263,16 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // An integer, or nothing: a lag of 2.5 samples is not a reading this format speaks.
                     if (auto l = fj.find ("lag_samples"); l != fj.end() && l->is_number_integer())
                         fe.lagSamples = l->get<int>();
+                    // …and the same against the model's own input: an integer inside the bound, or
+                    // nothing. The polarity is a closed set — +1 or -1, as integers — and anything else
+                    // (0, 2, -1.0, "-1") is not a reading. Neither refuses the manifest: absent and
+                    // unreadable both mean "not measured", and a player that needs them measures.
+                    int n = 0;
+                    if (auto l = fj.find ("input_lag_samples");
+                        l != fj.end() && detail::jintIn (*l, -kMaxInputLagSamples, kMaxInputLagSamples, n))
+                        fe.inputLagSamples = n;
+                    if (auto p = fj.find ("polarity"); p != fj.end() && detail::jintIn (*p, -1, 1, n) && n != 0)
+                        fe.polarity = n;
                     // How it was trained: a whole, non-negative number of epochs, and an ESR that is a
                     // finite number not below zero. Anything else is not a statement this format makes.
                     if (auto e = fj.find ("epochs"); e != fj.end() && e->is_number_unsigned()

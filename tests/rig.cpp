@@ -862,6 +862,75 @@ int main()
         }
     }
 
+    // --- `input_lag_samples` / `polarity`: the model against its own input, measured or not ------------
+    // Absolute where `lag_samples` is relative, and what a player that mixes the clean input with the
+    // model needs to line the two up and sum them in phase. A reading or nothing — never a refusal.
+    {
+        const std::string text = R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"preamp",
+            "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","150","300"]}],
+            "files":[{"file":"a.namz","settings":{"gain":"0"}},
+                     {"file":"b.namz","settings":{"gain":"150"},"lag_samples":0,"input_lag_samples":0,"polarity":1},
+                     {"file":"c.namz","settings":{"gain":"300"},"lag_samples":3,"input_lag_samples":37,"polarity":-1},
+                     {"file":"d.namz","settings":{"gain":"0"},"input_lag_samples":-48000,"polarity":-1},
+                     {"file":"e.namz","settings":{"gain":"0"},"input_lag_samples":48000},
+                     {"file":"f.namz","settings":{"gain":"0"},"input_lag_samples":12.5,"polarity":0},
+                     {"file":"g.namz","settings":{"gain":"0"},"input_lag_samples":"12","polarity":2},
+                     {"file":"h.namz","settings":{"gain":"0"},"input_lag_samples":48001,"polarity":-1.0},
+                     {"file":"i.namz","settings":{"gain":"0"},"input_lag_samples":-48001,"polarity":"-1"},
+                     {"file":"j.namz","settings":{"gain":"0"},"input_lag_samples":18446744073709551615,
+                                                              "polarity":18446744073709551615},
+                     {"file":"k.namz","settings":{"gain":"0"},"input_lag_samples":true,"polarity":true}]}]})";
+        bool v = false;
+        const auto r = loadRigManifest (text, &v);
+        ok (v && r.chain.size() == 1 && r.chain[0].device.files.size() == 11,
+            "eleven files, and no unreadable lag or polarity refuses the manifest");
+        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 11)
+        {
+            const auto& f = r.chain[0].device.files;
+            ok (! f[0].inputLagSamples && ! f[0].polarity, "no keys = not measured, not zero and not in phase");
+            ok (f[1].inputLagSamples == 0 && f[1].polarity == 1, "0 samples is a reading, and so is +1");
+            ok (f[2].inputLagSamples == 37 && f[2].polarity == -1 && f[2].lagSamples == 3,
+                "an absolute lag and an inversion, beside the relative lag: both keys, each its own reading");
+            ok (f[3].inputLagSamples == -48000 && f[4].inputLagSamples == 48000 && ! f[4].polarity,
+                "the bound is inclusive both ways, and one key does not need the other");
+            ok (! f[5].inputLagSamples && ! f[5].polarity, "12.5 samples and a polarity of 0: not readings");
+            ok (! f[6].inputLagSamples && ! f[6].polarity, "a lag in a string and a polarity of 2: not readings");
+            ok (! f[7].inputLagSamples && ! f[7].polarity, "a lag past the bound and -1.0: not readings");
+            ok (! f[8].inputLagSamples && ! f[8].polarity, "a lag past the bound below and \"-1\": not readings");
+            ok (! f[9].inputLagSamples && ! f[9].polarity,
+                "2^64-1 is not -1: an unsigned integer is judged as what it is");
+            ok (! f[10].inputLagSamples && ! f[10].polarity, "booleans are not readings");
+
+            const auto out = writeManifest (r);
+            bool again = false;
+            const auto r2 = loadRigManifest (out, &again);
+            ok (again && writeManifest (r2) == out, "write(load(write(x))) is a fixed point, byte for byte");
+            if (again && r2.chain.size() == 1 && r2.chain[0].device.files.size() == 11)
+            {
+                const auto& g = r2.chain[0].device.files;
+                ok (g[1].inputLagSamples == 0 && g[1].polarity == 1 && g[2].inputLagSamples == 37 && g[2].polarity == -1
+                    && g[3].inputLagSamples == -48000 && ! g[0].inputLagSamples && ! g[0].polarity && ! g[5].polarity,
+                    "…read back field for field: 0 stays a reading, absent stays absent");
+            }
+            const auto lag = out.find ("\"lag_samples\": 3"), abs = out.find ("\"input_lag_samples\": 37"),
+                       pol = out.find ("\"polarity\": -1");
+            ok (out.find ("\"input_lag_samples\": 0") != std::string::npos && lag != std::string::npos
+                && abs != std::string::npos && pol != std::string::npos && lag < abs && abs < pol,
+                "written on the file entry, after the relative lag");
+        }
+        // The writer never ships a reading its reader would drop.
+        Rig rig;
+        Stage st;
+        st.kind = StageKind::Nam; st.rawKind = "nam";
+        st.device.files = { { "a.namz", { { "gain", "0" } } } };
+        st.device.files[0].inputLagSamples = kMaxInputLagSamples + 1;
+        st.device.files[0].polarity = 0;
+        rig.chain.push_back (st);
+        const auto junk = writeManifest (rig);
+        ok (junk.find ("input_lag_samples") == std::string::npos && junk.find ("polarity") == std::string::npos,
+            "a lag past the bound and a polarity of 0 are not written");
+    }
+
     // --- `epochs` / `esr`: how a model was trained, stated or not known -----------------------------
     {
         const std::string text = R"({"format":"orbitrig","schema":4,"chain":[{"kind":"nam","slot":"pedal",

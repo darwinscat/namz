@@ -326,6 +326,12 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 if (fe.inputDb < -0.0005 || fe.inputDb > 0.0005)
                     fj["input_db"] = std::round (fe.inputDb * 100.0) / 100.0;
                 if (fe.lagSamples) fj["lag_samples"] = *fe.lagSamples;   // 0 is a reading; absent is none
+                // The same, against the model's own input — written only where the loader would read it
+                // back, so a pack never carries a reading its reader drops.
+                if (fe.inputLagSamples && *fe.inputLagSamples >= -kMaxInputLagSamples
+                                       && *fe.inputLagSamples <= kMaxInputLagSamples)
+                    fj["input_lag_samples"] = *fe.inputLagSamples;
+                if (fe.polarity && (*fe.polarity == 1 || *fe.polarity == -1)) fj["polarity"] = *fe.polarity;
                 if (fe.epochs)     fj["epochs"]      = *fe.epochs;
                 if (fe.esr)        fj["esr"]         = *fe.esr;
                 files.push_back (std::move (fj));

@@ -100,6 +100,11 @@ using Settings = std::map<std::string, std::string>;
 // See NAMZ-FORMAT.md.
 inline constexpr int kRigSchema = 5;
 
+// The most `input_lag_samples` may say, either way: one second at 48 kHz. A model that far behind its
+// input is not a latency but a broken capture, and a player that believed the number would allocate the
+// delay line it asks for.
+inline constexpr int kMaxInputLagSamples = 48000;
+
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
 // ---------------------------------------------------------------------------------------------
@@ -225,6 +230,17 @@ struct FileEntry
     // measured: a player that crossfades must measure for itself, and a stage where some entries carry
     // it and some do not is not measured either.
     std::optional<int> lagSamples;
+    // HOW MANY SAMPLES LATER than its own INPUT this model's output arrives, at the file's own sample
+    // rate; negative = earlier. ABSOLUTE, where `lagSamples` is relative to the stage's first file — so
+    // each entry stands alone — and both may be present: neither is computed from the other. And whether
+    // that output is INVERTED against the input: +1 in phase, -1 inverted. Measured once by the capture
+    // side from the sweep it shoots beside each take (the impulse response's leading edge: its place is
+    // the lag, its sign the polarity). A player that mixes the clean input with the model — a bass
+    // crossover — delays the clean by the lag (a negative lag delays the model) and multiplies it by the
+    // polarity, so the two sum in phase. Not stated = not measured; the loader reads only an integer
+    // within ±kMaxInputLagSamples, and only +1 or -1.
+    std::optional<int> inputLagSamples;
+    std::optional<int> polarity;
     // HOW THIS MODEL WAS TRAINED: the epochs its weights have, and the ESR (error-to-signal ratio, lower
     // is closer) the trainer reported for it. Written by the capture side from its own records, for a
     // person reading the pack; a player plays the same either way. Not stated = not known.
