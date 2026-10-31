@@ -361,15 +361,15 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     and little else, played through the neighbour above them with less going in. Into the model, not
     out of it: less signal is also less drive, so the dial fades instead of falling into a hole. The
     capture side decides this and writes it down; a player only applies it.
-  - `lag_samples` — how many samples LATER than the stage's first file this model's output arrives on
-    the same input, at the file's own sample rate — an integer, negative = earlier, at most 48000 either
-    way (since 5.0.0; the same bound, for the same reason, as `input_lag_samples` below). Two captures of
-    one device come out of training a few samples apart, and a player that crossfades them as they are
-    combs. The capture side measures this once, with every model in hand, and writes it on every entry
-    it measured (the first file's own is 0); a player delays each model by the largest lag minus its
+  - `lag_samples` — how many samples LATER than the stage's first file this model's output arrives on the
+    same input, at the file's own sample rate — a JSON integer token, negative = earlier, at most 48000
+    either way (since 5.0.0; the same bound, for the same reason, as `input_lag_samples` below). Two
+    captures of one device come out of training a few samples apart, and a player that crossfades them as
+    they are combs. The capture side measures this once, with every model in hand, and writes it on every
+    entry it measured (the first file's own is 0); a player delays each model by the largest lag minus its
     own, so any pair sums in phase. Absent = not measured: a player that crossfades must measure for
-    itself, and a stage where some entries carry it and some do not is not measured either. A value of
-    the wrong kind or past the bound is not a reading, and a reader drops it.
+    itself, and a stage where some entries carry it and some do not is not measured either. A value of the
+    wrong kind or past the bound is not a reading, and a reader drops it.
   - `input_lag_samples` — how many samples LATER than its own INPUT this model's output arrives, at the
     file's own sample rate: a JSON integer token (`37`, never `37.0`), negative = earlier, at most 48000
     either way. ABSOLUTE, where
