@@ -634,6 +634,192 @@ int main()
         }
     }
 
+    // --- TONE, the fourth form: `positions[].hz` — a knob that moves ANOTHER knob's band --------------
+    // A bass preamp's MID is a bell's gain and the FREQ under it moves that bell's centre: the bell just
+    // moves. FREQ has no sound of its own, so it ships where the band sits, and the band names it.
+    {
+        auto manifestWith = [] (const std::string& toneJson) {
+            return std::string (R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"preamp",
+                "controls":[{"name":"gain","role":"gain","sweep":300,"values":["0","300"]}],
+                "files":[{"file":"a.namz","settings":{"gain":"0"}}],
+                "tone":[)") + toneJson + "]}]}";
+        };
+        // NAMZ-FORMAT.md's worked example, as printed there.
+        const std::string mid = R"({"name":"mid","sweep":300,"placement":"post","reference":"150",
+            "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"}]})";
+        const std::string freq = R"({"name":"freq","sweep":300,"reference":"150",
+            "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800},
+                         {"value":"300","norm":1.0,"hz":3000}]})";
+        {
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (mid + "," + freq), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2, "MID + FREQ: both knobs load");
+            if (r.chain.size() == 1 && r.chain[0].tone.size() == 2)
+            {
+                const auto& m = r.chain[0].tone[0];
+                const auto& f = r.chain[0].tone[1];
+                ok (m.sections.size() == 1 && m.sections[0].hzBy == "freq" && m.sections[0].hz == 800.0,
+                    "the band names the knob that moves it, and keeps its frequency at the reference");
+                ok (isFrequencyKnob (f) && ! isFrequencyKnob (m), "FREQ is a frequency knob; MID is not");
+                ok (f.positions.size() == 3 && f.positions[0].hz == 220.0 && f.positions[1].hz == 800.0
+                    && f.positions[2].hz == 3000.0 && f.positions[2].norm == 1.0 && f.positions[0].q == 0.0,
+                    "…a frequency and a norm per position, and no Q: the band's own Q stands");
+
+                const auto text = writeManifest (r);
+                ok (text.find ("\"hz_by\": \"freq\"") != std::string::npos, "the writer names the owner on the band");
+                ok (text.find ("\"placement\"") == text.rfind ("\"placement\""),
+                    "…and places only MID: FREQ has no filter of its own to place");
+                ok (text.find ("\"grid\"") == std::string::npos && text.find ("\"q\": 0.0") == std::string::npos,
+                    "…writes no grid for it, and no Q it does not state");
+                bool again = false;
+                const auto r2 = loadRigManifest (text, &again);
+                ok (again && writeManifest (r2) == text, "write(load(write(x))) is a fixed point, byte for byte");
+                ok (again && r2.chain.size() == 1 && r2.chain[0].tone.size() == 2
+                    && r2.chain[0].tone[0].sections[0].hzBy == "freq" && r2.chain[0].tone[1].positions[1].hz == 800.0
+                    && r2.chain[0].tone[1].reference == "150" && r2.chain[0].tone[1].placement == "post",
+                    "…and field for field");
+            }
+        }
+        // A FREQ that CLICKS, stating Q as well: no sweep, no norm, a value per panel word.
+        {
+            const std::string midQ = R"({"name":"mid","sweep":300,"reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-12.0,12.0],"hz_by":"freq"}]})";
+            const std::string sw = R"({"name":"freq","reference":"800","default":"1600",
+                "positions":[{"value":"220","hz":220,"q":0.7},{"value":"800","hz":800,"q":0.9},
+                             {"value":"1600","label":"1.6k","hz":1600,"q":1.1}]})";
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (midQ + "," + sw), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2, "MID + a FREQ switch: both load");
+            if (r.chain.size() == 1 && r.chain[0].tone.size() == 2)
+            {
+                const auto& f = r.chain[0].tone[1];
+                ok (isFrequencyKnob (f) && f.sweep == 0 && f.defaultValue == "1600" && f.positions.size() == 3
+                    && f.positions[2].q == 1.1 && f.positions[2].label == "1.6k",
+                    "a switch states a frequency and a Q per position, its default a position it has");
+                const auto text = writeManifest (r);
+                ok (text.find ("\"norm\"") == std::string::npos, "…and is written without a norm");
+                bool again = false;
+                const auto r2 = loadRigManifest (text, &again);
+                ok (again && writeManifest (r2) == text, "…and round-trips byte for byte");
+            }
+        }
+        // Where FREQ says nothing about Q, the band's Q is its own knob's — `q_at` included.
+        {
+            bool v = false;
+            const auto r = loadRigManifest (manifestWith (R"({"name":"mid","sweep":300,"reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-12.0,12.0],"q_at":[0.6,1.2],"hz_by":"freq"}]},)"
+                + freq), &v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 2 && r.chain[0].tone[0].sections[0].qAtMax == 1.2,
+                "a band keeps its own `q_at` when its frequency knob states no Q");
+        }
+
+        // REFUSED WHOLE — a link a reader would have to guess at.
+        auto refused = [&] (const std::string& toneJson, const char* what) {
+            bool v = true;
+            const auto r = loadRigManifest (manifestWith (toneJson), &v);
+            ok (! v && r.chain.empty(), what);
+        };
+        auto midWith = [] (const std::string& bandExtra) {
+            return std::string (R"({"name":"mid","sweep":300,"reference":"150",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0])") + bandExtra + "}]}";
+        };
+        const std::string curve = R"({"name":"tone","sweep":300,"reference":"0","grid":{"points":2},
+            "positions":[{"value":"0","norm":0.0,"db":[0,0]},{"value":"300","norm":1.0,"db":[0,-6]}]})";
+        refused (midWith (R"(,"hz_by":7)") + "," + freq, "`hz_by` that is not a string: refused");
+        refused (midWith (R"(,"hz_by":"")") + "," + freq, "`hz_by` that is an empty name: refused");
+        refused (midWith (R"(,"hz_by":"frequency")") + "," + freq, "`hz_by` naming no knob: refused");
+        refused (midWith (R"(,"hz_by":"tone")") + "," + curve + "," + freq,
+                 "`hz_by` naming a knob of another form: refused");
+        refused (midWith (R"(,"hz_by":"mid")") + "," + freq, "`hz_by` naming the band's own knob: refused");
+        refused (midWith (R"(,"hz_by":"freq")") + "," + freq + "," + freq,
+                 "`hz_by` naming a name two knobs carry: refused");
+        refused (midWith (R"(,"hz_by":"freq","hz_at":[400,1600])") + "," + freq,
+                 "a band with a frequency owner AND its own `hz_at`: two owners, refused");
+        refused (midWith (R"(,"q_at":[0.6,1.2],"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220,"q":0.7},{"value":"150","norm":0.5,"hz":800,"q":0.9},
+                                  {"value":"300","norm":1.0,"hz":3000,"q":1.2}]})",
+                 "a band with its own `q_at` under a knob that states Q: two owners, refused");
+        refused (R"({"name":"mid","sweep":300,"reference":"150","sections":[
+                        {"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"},
+                        {"type":"bell","hz":800,"q":2.0,"range_db":[-3.0,3.0],"hz_by":"freq"}]},)" + freq,
+                 "two bands naming one frequency knob: refused");
+        refused (midWith ("") + "," + freq, "a frequency knob no band names: refused");
+        refused (R"({"name":"edge","reference":"a","positions":[{"value":"a","sections":[]},
+                        {"value":"b","sections":[{"type":"bell","hz":800,"q":0.9,"gain_db":-3.0,"hz_by":"freq"}]}]},)" + freq,
+                 "`hz_by` on a switch position's band: refused, like any travel key there");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150","grid":{"points":2},
+                     "positions":[{"value":"0","norm":0.0,"hz":220,"db":[0,0]},{"value":"150","norm":0.5,"hz":800},
+                                  {"value":"300","norm":1.0,"hz":3000}]})",
+                 "a position stating a frequency AND a curve: two forms, refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","reference":"150",
+                     "positions":[{"value":"0","hz":220},{"value":"150","hz":800,"sections":[]}]})",
+                 "a position stating a frequency AND bands: two forms, refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150","grid":{"points":2},
+                     "positions":[{"value":"0","norm":0.0,"db":[0,0]},{"value":"150","norm":0.5,"hz":800},
+                                  {"value":"300","norm":1.0,"hz":3000}]})",
+                 "a knob whose positions disagree about frequency or curve: refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "sections":[{"type":"bell","hz":800,"q":1,"range_db":[-1,1]}],
+                     "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                 "a frequency knob with bands of its own is both forms: refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                 "a frequency SWITCH carrying `norm`: refused, as for every switch");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":810},
+                                  {"value":"300","norm":1.0,"hz":3000}]})",
+                 "the band's `hz` and FREQ's at its reference disagree: one frequency stated twice, refused");
+        refused (midWith (R"(,"hz_by":"freq")") + R"(,{"name":"freq","sweep":300,"reference":"150",
+                     "positions":[{"value":"0","norm":0.0,"hz":220,"q":0.7},{"value":"150","norm":0.5,"hz":800,"q":1.0},
+                                  {"value":"300","norm":1.0,"hz":3000,"q":1.2}]})",
+                 "…and so do their Qs, where FREQ states Q: refused");
+
+        // DROPPED — one knob cannot be played, and every reader sees the same.
+        auto loaded = [&] (const std::string& toneJson, bool& v) { return loadRigManifest (manifestWith (toneJson), &v); };
+        auto freqDropped = [&] (const std::string& freqJson, const char* what) {
+            bool v = false;
+            const auto r = loaded (midWith (R"(,"hz_by":"freq")") + "," + freqJson, v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.size() == 1 && r.chain[0].tone[0].name == "mid"
+                && r.chain[0].tone[0].sections[0].hzBy.empty() && r.chain[0].tone[0].sections[0].hz == 800.0, what);
+        };
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":0},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a frequency of 0: FREQ dropped, and the band stays at its own `hz`");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":-220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a negative frequency: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":"220"},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a frequency in a string: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":220,"q":0.7},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a Q on some positions and not others: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.0,"hz":220,"q":0},{"value":"150","norm":0.5,"hz":800,"q":0.9}]})",
+                     "a Q of 0: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"150","norm":0.5,"hz":800},{"value":"0","norm":0.0,"hz":220}]})",
+                     "norms not ascending: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"0","norm":0.5,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "two positions at one norm leave nothing to interpolate between: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150",
+                        "positions":[{"value":"150","norm":0.5,"hz":800},{"value":"300","norm":1.5,"hz":3000}]})",
+                     "a norm past 1: dropped");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"100",
+                        "positions":[{"value":"0","norm":0.0,"hz":220},{"value":"150","norm":0.5,"hz":800}]})",
+                     "a reference that names no position: dropped, the band at its own `hz`");
+        freqDropped (R"({"name":"freq","sweep":300,"reference":"150","positions":[{"value":"150","norm":0.5,"hz":800}]})",
+                     "one position cannot move anything: dropped");
+        {
+            bool v = false;
+            const auto r = loaded (R"({"name":"mid","sweep":300,"reference":"noon",
+                "sections":[{"type":"bell","hz":800,"q":0.9,"range_db":[-15.0,15.0],"hz_by":"freq"}]},)" + freq, v);
+            ok (v && r.chain.size() == 1 && r.chain[0].tone.empty(),
+                "a band's knob that is dropped takes its frequency knob with it: nothing left to move");
+        }
+    }
+
     // --- THE SCHEMA GATE — written with the format, read by nobody, tested for the first time here --
     {
         auto withSchema = [] (const std::string& schema) {

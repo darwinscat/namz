@@ -347,7 +347,9 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 const bool asSections = ! me.sections.empty();
                 bool asPosSections = false;
                 for (const auto& p : me.positions) if (! p.sections.empty()) { asPosSections = true; break; }
-                const bool asCurves = ! asSections && ! asPosSections;
+                // …and a FREQUENCY knob is read off its positions too: a frequency on each, nothing else.
+                const bool asFrequency = ! asSections && ! asPosSections && isFrequencyKnob (me);
+                const bool asCurves = ! asSections && ! asPosSections && ! asFrequency;
                 if (asSections ? me.sections.empty() : me.positions.empty()) continue;
                 // …and a `sections` knob with no sweep is one the reader drops on sight (the travel law
                 // runs on rotation), so writing it would only make a pack that loses a knob in transit.
@@ -359,7 +361,8 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 nlohmann::ordered_json mj;
                 mj["name"] = me.name;
                 if (me.sweep > 0)            mj["sweep"]     = me.sweep;
-                if (! me.placement.empty())  mj["placement"] = me.placement;
+                // A frequency knob has no filter of its own to place: its band sits where its own knob puts it.
+                if (! me.placement.empty() && ! asFrequency) mj["placement"] = me.placement;
                 if (! me.reference.empty())  mj["reference"] = me.reference;
                 // The loader has always read this; the writer did not emit it, so a pack that stated
                 // where the knob starts lost that fact the first time anything rewrote it — silently,
@@ -392,7 +395,7 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // a reader that meets a collapsed band ("tested, a filter nowhere") on a knob with no grid
                 // reads it as a verdict on bands it should have played. A dial's `sections` keeps it —
                 // there it is provenance of the ladder the bands were fitted to, and readers know it.
-                if (me.trusted.levels >= 2 && ! asPosSections)
+                if (me.trusted.levels >= 2 && ! asPosSections && ! asFrequency)
                 {
                     nlohmann::ordered_json t;
                     t["lo_hz"]    = me.trusted.loHz;
@@ -425,6 +428,8 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                         if (sc.qAtMin > 0.0 || sc.qAtMax > 0.0)
                             x["q_at"]  = nlohmann::ordered_json::array ({ sc.qAtMin > 0.0 ? sc.qAtMin : sc.q,
                                                                   sc.qAtMax > 0.0 ? sc.qAtMax : sc.q });
+                        // The knob that moves this band's frequency instead, when another one does.
+                        if (! sc.hzBy.empty()) x["hz_by"] = sc.hzBy;
                         sections.push_back (std::move (x));
                     }
                     mj["sections"] = std::move (sections);
@@ -457,6 +462,13 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                                 bands.push_back (std::move (x));
                             }
                             pj["sections"] = std::move (bands);
+                        }
+                        else if (asFrequency)
+                        {
+                            // Where the band sits here — and its Q, when this knob states one (0 = it
+                            // leaves the Q to the band's own knob, and then no position carries one).
+                            pj["hz"] = p.hz;
+                            if (p.q > 0.0) pj["q"] = p.q;
                         }
                         else
                         {

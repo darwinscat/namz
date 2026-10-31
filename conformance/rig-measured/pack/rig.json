@@ -1,5 +1,5 @@
 {
-  "format": "orbitrig", "schema": 4,
+  "format": "orbitrig", "schema": 5,
   "rig_id": "namz-golden-drive", "name": "Golden Drive", "modeled_by": "namz conformance",
   "chain": [
     {

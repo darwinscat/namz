@@ -92,8 +92,13 @@ using Settings = std::map<std::string, std::string>;
 // the pack plays the reference, silently. That is the same failure 2→3 was raised for. The same bump
 // carries the two rules that make the form honest: `norm` exists only where rotation exists, and a
 // blend's per-position gains are stated rather than derived from an array index.
+// Bumped to 5 when a knob learned to move ANOTHER knob's band: a FREQ under a MID, whose positions state
+// where the band sits (`positions[].hz`) while the band names it (`hz_by`). A schema-4 reader meets the
+// frequency knob, finds no `grid`, never reads its positions, drops it as a knob carrying neither form and
+// plays the band at one frequency — the author declared a knob and the pack plays without it, silently,
+// which is the failure 3→4 was raised for.
 // See NAMZ-FORMAT.md.
-inline constexpr int kRigSchema = 4;
+inline constexpr int kRigSchema = 5;
 
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
@@ -531,6 +536,12 @@ struct TonePosition
     // …or, instead of that curve, the bands this position IS (a switch shipping as bands). Exclusive
     // with `db`: a position states one description of itself, for the same reason a knob does.
     std::vector<PositionSection> sections;
+    // …or, on a FREQUENCY knob, where the band it moves sits here: its frequency in Hz, and its Q when the
+    // knob states one (0 = this knob leaves the Q to the band's own knob). A frequency knob has no sound
+    // of its own — a FREQ under a MID: at MID's reference the bell is flat wherever FREQ points — so it
+    // carries neither a curve nor bands, only this. Exclusive with both, for the same reason again.
+    double hz = 0.0;
+    double q  = 0.0;
 };
 
 // The log-spaced frequency grid `TonePosition::db` is sampled on. points == 0 → a `positions` knob is
@@ -612,6 +623,13 @@ struct Section
     // spelling here and write→load is field-exact.
     double hzAtMin = 0.0, hzAtMax = 0.0;
     double qAtMin  = 0.0, qAtMax  = 0.0;
+    // `hz_by`: the frequency knob (a Tone of the same stage, by name) that sets this band's frequency —
+    // and its Q, when that knob states one — instead of `t`. Empty = this knob owns the frequency, as
+    // above. A band naming one carries no `hz_at` (two owners of one frequency); its gain still runs on
+    // `t`. The loader guarantees the link: the knob exists, is a frequency knob, moves this band and no
+    // other, and agrees with `hz` (and `q`) at its reference; a frequency knob that was dropped leaves
+    // this empty, and the band plays at its own `hz`.
+    std::string hzBy;
 };
 
 struct Tone
@@ -645,6 +663,15 @@ struct Tone
     // switch says the same thing per position instead (TonePosition::sections, ToneShape above).
     std::vector<Section> sections;
 };
+
+// A FREQUENCY knob — the fourth form, `positions[].hz`: its positions say where ANOTHER knob's band sits
+// (the band names it in Section::hzBy). It has no filter of its own, so `placement`, `grid` and
+// `trusted` mean nothing on it. A dial interpolates the frequency geometrically against `norm` and the Q
+// linearly, holding past the outermost position; a switch takes the position whose `value` matches.
+inline bool isFrequencyKnob (const Tone& t)
+{
+    return ! t.positions.empty() && t.sections.empty() && t.positions.front().hz > 0.0;
+}
 
 // ---------------------------------------------------------------------------------------------
 // `blend` — a dry/wet mix knob, the third kind of control and neither of the other two.

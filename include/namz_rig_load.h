@@ -115,7 +115,26 @@ namespace detail
             if (out.qAtMin == out.q) out.qAtMin = 0.0;
             if (out.qAtMax == out.q) out.qAtMax = 0.0;
         }
+        // The knob that sets this band's frequency instead. Its shape (a non-empty string) and the link
+        // itself were judged before this band was read: a broken link refuses the manifest, it does not
+        // spoil one band.
+        out.hzBy = jstr (j, "hz_by");
         return true;
+    }
+
+    // ONE POSITION OF A FREQUENCY KNOB — `positions[].hz`. false = unusable, and then the whole knob is:
+    // a frequency that is not a strictly positive number, or a Q that is stated (`withQ`) and is not one.
+    inline bool readFrequencyPosition (const nlohmann::json& j, bool withQ, TonePosition& out)
+    {
+        const auto h = j.find ("hz");
+        if (h == j.end() || ! h->is_number()) return false;
+        out.hz = h->get<double>();
+        if (! std::isfinite (out.hz) || ! (out.hz > 0.0)) return false;
+        if (! withQ) return true;
+        const auto q = j.find ("q");
+        if (q == j.end() || ! q->is_number()) return false;
+        out.q = q->get<double>();
+        return std::isfinite (out.q) && out.q > 0.0;
     }
 } // namespace detail
 
@@ -241,6 +260,15 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
             // `tone` — linear knobs shipped as DSP instead of as model axes. Deliberately NOT in
             // `controls`: no file carries them in its settings, so a player that put them on the
             // selection dial would build a knob resolve() can never satisfy.
+            //
+            // A FREQUENCY knob and the band naming it are judged twice. What the manifest SAYS — who names
+            // whom — is collected here as written, before any knob is dropped, and a link that is broken
+            // as written refuses the manifest. What survives the per-knob rules is then tied together
+            // after the loop: a dropped end of a link takes the other end's link with it.
+            struct ToneDecl { std::string name; bool frequency = false; bool statesQ = false; };
+            struct LinkDecl { std::string owner; bool hasQAt = false; };
+            std::vector<ToneDecl> toneDecls;
+            std::vector<LinkDecl> linkDecls;
             if (auto m = sj.find ("tone"); m != sj.end() && m->is_array())
                 for (const auto& mj : *m)
                 {
@@ -287,18 +315,27 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // the knob-level refusal above names, and is refused the same way.
                     const auto ps = mj.find ("positions");
                     const bool hasPositions = ps != mj.end() && ps->is_array();
-                    bool anyBands = false, anyCurve = false;
+                    bool anyBands = false, anyCurve = false, anyFreq = false, anyQ = false;
                     if (hasPositions)
                         for (const auto& pj : *ps)
                         {
                             if (! pj.is_object()) continue;
-                            const bool bands = pj.contains ("sections"), curve = pj.contains ("db");
-                            if (bands && curve) { if (ok) *ok = false; return Rig {}; }
+                            const bool bands = pj.contains ("sections"), curve = pj.contains ("db"),
+                                       freq  = pj.contains ("hz");
+                            if ((int) bands + (int) curve + (int) freq > 1) { if (ok) *ok = false; return Rig {}; }
                             anyBands = anyBands || bands;
                             anyCurve = anyCurve || curve;
+                            anyFreq  = anyFreq  || freq;
+                            anyQ     = anyQ     || (freq && pj.contains ("q"));
                         }
-                    if (anyBands && anyCurve) { if (ok) *ok = false; return Rig {}; }
+                    if ((int) anyBands + (int) anyCurve + (int) anyFreq > 1) { if (ok) *ok = false; return Rig {}; }
                     const bool asPosSections = anyBands;
+                    const bool asFrequency   = anyFreq;
+                    toneDecls.push_back ({ me.name, asFrequency, anyQ });
+                    // A frequency knob has no filter of its own: where a filter goes, the grid a curve is
+                    // sampled on and the band a curve held over mean nothing on it. Not read — the defaults
+                    // stand, so what the writer leaves out reads back as what it was.
+                    if (asFrequency) { me.placement = "post"; me.grid = ToneGrid {}; me.trusted = ToneTrust {}; }
                     // ROTATION EXISTS OR IT DOES NOT, and `norm` must say the same as `sweep`. In a
                     // double, absent and 0.0 are one value — 0.0 being a legal dial norm, no sentinel is
                     // available — so a producer rewriting a switch would resurrect the evenly spaced
@@ -322,7 +359,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // and no position is ADDRESSED by its place in the array — a position is addressed by
                     // its `value` — so a missing one costs that position and nothing else.
                     bool usable = true;
-                    if (hasPositions && (asPosSections || me.grid.points > 0))
+                    if (hasPositions && (asPosSections || asFrequency || me.grid.points > 0))
                         for (const auto& pj : *ps)
                         {
                             if (! pj.is_object()) continue;
@@ -330,7 +367,19 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                             p.value      = detail::jstr (pj, "value");
                             p.label      = detail::jstr (pj, "label");
                             if (me.sweep > 0) p.norm = detail::jnum (pj, "norm");
-                            if (asPosSections)
+                            if (asFrequency)
+                            {
+                                // A frequency per position, and a Q on every position or on none. On a
+                                // dial the norms must leave something to interpolate between: inside 0…1
+                                // and strictly ascending, which the geometric law divides by.
+                                if (! detail::readFrequencyPosition (pj, anyQ, p)) { usable = false; break; }
+                                if (me.sweep > 0
+                                    && (! std::isfinite (p.norm) || p.norm < 0.0 || p.norm > 1.0
+                                        || (! me.positions.empty() && ! (p.norm > me.positions.back().norm))))
+                                { usable = false; break; }
+                                if (! p.value.empty()) me.positions.push_back (std::move (p));
+                            }
+                            else if (asPosSections)
                             {
                                 const auto sx = pj.find ("sections");
                                 if (sx == pj.end() || ! sx->is_array()) { usable = false; break; }
@@ -338,7 +387,7 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                                 {
                                     // A travel key here is a claim about a stop this knob does not have.
                                     if (b.is_object() && (b.contains ("range_db") || b.contains ("hz_at")
-                                                          || b.contains ("q_at")))
+                                                          || b.contains ("q_at") || b.contains ("hz_by")))
                                     { if (ok) *ok = false; return Rig {}; }
                                     PositionSection sc;
                                     if (! b.is_object() || ! detail::readPositionSection (b, sc)) { usable = false; break; }
@@ -364,6 +413,18 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     // knob has always meant. The travel law runs on rotation, t = f(reference / sweep):
                     // a switch (no sweep), or a reference that is not a position on that dial, leaves it
                     // nothing to run on, so such a knob cannot carry sections either.
+                    // `hz_by` is judged as WRITTEN, before any band is read: a link that is not a name is
+                    // refused, and so is a band that names a frequency owner and keeps its own `hz_at` —
+                    // two owners of one frequency, and a reader would have to pick one.
+                    if (auto ss = mj.find ("sections"); ss != mj.end() && ss->is_array())
+                        for (const auto& sx : *ss)
+                            if (sx.is_object() && sx.contains ("hz_by"))
+                            {
+                                const auto& hb = sx["hz_by"];
+                                if (! hb.is_string() || hb.get<std::string>().empty() || sx.contains ("hz_at"))
+                                { if (ok) *ok = false; return Rig {}; }
+                                linkDecls.push_back ({ hb.get<std::string>(), sx.contains ("q_at") });
+                            }
                     if (auto ss = mj.find ("sections"); ss != mj.end() && ss->is_array())
                         for (const auto& sx : *ss)
                         {
@@ -408,6 +469,50 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                     if (usable && ! me.name.empty() && (me.positions.empty() != me.sections.empty()))
                         st.tone.push_back (std::move (me));
                 }
+
+            // THE LINKS AS WRITTEN. A band names exactly one frequency knob of this stage; a frequency
+            // knob is named by exactly one band; where the knob states Q, the band has no `q_at` of its
+            // own. A band naming its own knob names a knob of another form, and is refused by the same
+            // rule. No cycle can be written: a frequency knob has no band to name anything with.
+            for (const auto& l : linkDecls)
+            {
+                int named = 0;
+                const ToneDecl* owner = nullptr;
+                for (const auto& d : toneDecls) if (d.name == l.owner) { ++named; owner = &d; }
+                if (named != 1 || ! owner->frequency || (l.hasQAt && owner->statesQ))
+                { if (ok) *ok = false; return Rig {}; }
+            }
+            for (const auto& d : toneDecls)
+            {
+                if (! d.frequency) continue;
+                int moved = 0;
+                for (const auto& l : linkDecls) if (l.owner == d.name) ++moved;
+                if (moved != 1) { if (ok) *ok = false; return Rig {}; }
+            }
+            // THE LINKS THAT SURVIVED. A frequency knob that was dropped plays its reference, which is
+            // the band's own `hz`: the band keeps it and forgets the link. A band's knob that was dropped
+            // leaves its frequency knob nothing to move: that knob goes too. Where both ends remain, the
+            // band's `hz` (and `q`, where the knob states Q) and the knob's at its reference are one
+            // value stated twice, and two values are two products: refused.
+            for (auto& t : st.tone)
+                for (auto& sc : t.sections)
+                {
+                    if (sc.hzBy.empty()) continue;
+                    const Tone* owner = nullptr;
+                    for (const auto& o : st.tone) if (o.name == sc.hzBy && isFrequencyKnob (o)) owner = &o;
+                    if (owner == nullptr) { sc.hzBy.clear(); continue; }
+                    const TonePosition* ref = nullptr;
+                    for (const auto& p : owner->positions) if (p.value == owner->reference) ref = &p;
+                    if (ref == nullptr || ref->hz != sc.hz || (ref->q > 0.0 && ref->q != sc.q))
+                    { if (ok) *ok = false; return Rig {}; }
+                }
+            std::vector<std::string> moved;
+            for (const auto& t : st.tone)
+                for (const auto& sc : t.sections) if (! sc.hzBy.empty()) moved.push_back (sc.hzBy);
+            st.tone.erase (std::remove_if (st.tone.begin(), st.tone.end(), [&moved] (const Tone& f) {
+                               return isFrequencyKnob (f) && std::find (moved.begin(), moved.end(), f.name) == moved.end();
+                           }),
+                           st.tone.end());
 
             // `blend` — a dry/wet mix knob. Same reason as `tone` for staying out of `controls`, and
             // the same reference invariant: the models were captured at the full-WET end.
