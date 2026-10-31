@@ -10,7 +10,7 @@ Two fixtures, one reference test:
 
 ```
 rig/                  a sparse channel × gain matrix — pins the SELECTION policy
-rig-measured/         one gain dial + two TONE (linear) knobs, one per form — the minimal modern device
+rig-measured/         one gain dial + TONE (linear) knobs in every form — the minimal modern device
   pack/               the golden pack, folder shape (zip it for the exchange-shape tests)
     rig.json          written by the CANONICAL writer (namz::rig::writeManifest) — byte-exact truth
     m01.namz          tiny models with stamped Capture-identity keys (namz::rig::stampMeta vocabulary)

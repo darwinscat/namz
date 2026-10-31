@@ -85,7 +85,8 @@ static Rig buildModel (const json& expected)
             Tone me;
             me.name      = mx["name"].get<std::string>();
             me.sweep     = mx.contains ("sweep") ? mx["sweep"].get<int>() : 0;
-            me.placement = mx["placement"].get<std::string>();
+            // A frequency knob has no filter to place and states no placement; the model's default stands.
+            me.placement = mx.contains ("placement") ? mx["placement"].get<std::string>() : std::string ("post");
             me.reference = mx["reference"].get<std::string>();
             if (auto d = mx.find ("default"); d != mx.end()) me.defaultValue = d->get<std::string>();
             // …and provenance is optional too: a knob may hold nothing while sweeping. Read
@@ -130,6 +131,11 @@ static Rig buildModel (const json& expected)
                             if (b.contains ("pivot")) ps2.pivot = b["pivot"].get<double>();
                             p.sections.push_back (ps2);
                         }
+                    else if (px.contains ("hz"))                     // a frequency knob: where its band sits
+                    {
+                        p.hz = px["hz"].get<double>();
+                        if (px.contains ("q")) p.q = px["q"].get<double>();
+                    }
                     else
                     {
                         p.levelDb = px["level_db"].get<double>();   // same story as the indices above
@@ -149,6 +155,7 @@ static Rig buildModel (const json& expected)
                     if (auto p = x.find ("pivot"); p != x.end()) sc.pivot = p->get<double>();
                     if (auto h = x.find ("hz_at"); h != x.end()) { sc.hzAtMin = (*h)[0].get<double>(); sc.hzAtMax = (*h)[1].get<double>(); }
                     if (auto q = x.find ("q_at");  q != x.end()) { sc.qAtMin  = (*q)[0].get<double>(); sc.qAtMax  = (*q)[1].get<double>(); }
+                    if (auto h = x.find ("hz_by"); h != x.end()) sc.hzBy = h->get<std::string>();
                     me.sections.push_back (sc);
                 }
             st.tone.push_back (std::move (me));
@@ -220,7 +227,7 @@ static void checkTone (const Stage& st, const json& sx, const char* via)
         const auto& mx = (*ms)[i];
         ok (me.name == mx["name"].get<std::string>()
             && me.sweep == (mx.contains ("sweep") ? mx["sweep"].get<int>() : 0)
-            && me.placement == mx["placement"].get<std::string>()
+            && me.placement == (mx.contains ("placement") ? mx["placement"].get<std::string>() : std::string ("post"))
             && me.reference == mx["reference"].get<std::string>(), tag ("tone identity"));
         // Where the knob starts. A round trip that drops this is not detectably wrong — the field is
         // optional and its absence means "start at the reference" — so only a fixture that sets it can
@@ -266,6 +273,9 @@ static void checkTone (const Stage& st, const json& sx, const char* via)
                     ok (got.qAtMin == (*q)[0].get<double>() && got.qAtMax == (*q)[1].get<double>(), tag ("section q_at"));
                 else
                     ok (got.qAtMin == 0.0 && got.qAtMax == 0.0, tag ("section Q does not move"));
+                // …and the knob that moves its frequency instead, named or not.
+                ok (got.hzBy == (x.contains ("hz_by") ? x["hz_by"].get<std::string>() : std::string {}),
+                    tag ("section hz_by"));
             }
             continue;
         }
@@ -273,7 +283,12 @@ static void checkTone (const Stage& st, const json& sx, const char* via)
         ok (me.sections.empty(), tag ("a positions knob carries no sections"));
         // A knob that ships bands per position ships no curve, so it has no grid to describe one.
         const bool bandsPerPosition = ! mx["positions"].empty() && mx["positions"][0].contains ("sections");
-        if (! bandsPerPosition)
+        // …and neither does a frequency knob, which ships where another knob's band sits.
+        const bool frequency = ! mx["positions"].empty() && mx["positions"][0].contains ("hz");
+        ok (isFrequencyKnob (me) == frequency, tag ("a frequency knob reads as one, and only it"));
+        if (frequency)
+            ok (me.grid.points == 0, tag ("a frequency knob carries no grid"));
+        else if (! bandsPerPosition)
             ok (me.grid.points == mx["grid"]["points"].get<int>(), tag ("tone grid"));
         else
             ok (me.grid.points == 0, tag ("a bands-per-position knob carries no grid"));
@@ -295,6 +310,9 @@ static void checkTone (const Stage& st, const json& sx, const char* via)
                         && got.sections[b].gainDb == (*sx2)[b]["gain_db"].get<double>(),
                         tag ("position band"));
             }
+            else if (px.contains ("hz"))
+                ok (got.hz == px["hz"].get<double>() && got.q == (px.contains ("q") ? px["q"].get<double>() : 0.0)
+                    && got.db.empty() && got.sections.empty(), tag ("frequency position"));
             else
             {
                 ok (got.levelDb == px["level_db"].get<double>(), tag ("tone position level"));
