@@ -355,7 +355,7 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     where `input_db` meets it, before anything splits, and `post` what the stage leaves with, after the
     dry/wet mix, where `output_db` is applied; absent = `post`, and any other word is skipped. Absent =
     no filter; one spelled badly (not an object, no positive `hz`, a slope off the 6 dB steps) is no
-    filter either, never a refusal.
+    filter either, never a refusal. Since 5.1.0.
 
   Neither key needs a schema change on its own. They are additive, so a reader that has not met them
   plays exactly as it plays today — that is the status quo and not a regression. Packs written before

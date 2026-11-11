@@ -6,7 +6,7 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
-## [Unreleased]
+## [5.1.0] — 2026-11-11 — a pack that carries its own high-pass and low-pass
 
 ### Added
 - **`chain[].high_pass` and `chain[].low_pass` — the pack's own filters**, `{ hz, db_per_oct, placement }`:
@@ -578,6 +578,7 @@ First stable release of the C++ reference.
 - **Lossless** to float32, **deterministic** (byte-identical across runs, platforms, and — via the
   conformance vectors — language ports), and **robust** (every malformed input is rejected cleanly).
 
+[5.1.0]: https://github.com/darwinscat/namz/releases/tag/v5.1.0
 [5.0.0]: https://github.com/darwinscat/namz/releases/tag/v5.0.0
 [4.4.1]: https://github.com/darwinscat/namz/releases/tag/v4.4.1
 [4.4.0]: https://github.com/darwinscat/namz/releases/tag/v4.4.0
