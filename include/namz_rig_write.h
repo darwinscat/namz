@@ -348,6 +348,19 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
         // a manifest somebody reads should not carry `"input_db": 0.0` on every stage that has none.
         if (st.inputDb  < -0.0005 || st.inputDb  > 0.0005) sj["input_db"]  = std::round (st.inputDb  * 100.0) / 100.0;
         if (st.outputDb < -0.0005 || st.outputDb > 0.0005) sj["output_db"] = std::round (st.outputDb * 100.0) / 100.0;
+        // The pack's own filters, beside the levels and only where there is one.
+        const auto writeFilter = [&sj] (const char* key, const Stage::Filter& f)
+        {
+            if (! (f.hz > 0.0))
+                return;
+            nlohmann::ordered_json fj;
+            fj["hz"]         = std::round (f.hz * 100.0) / 100.0;
+            fj["db_per_oct"] = f.dbPerOct;
+            fj["placement"]  = f.placement;
+            sj[key] = std::move (fj);
+        };
+        writeFilter ("high_pass", st.highPass);
+        writeFilter ("low_pass",  st.lowPass);
 
         if (st.kind == StageKind::Nam)
         {

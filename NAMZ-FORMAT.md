@@ -348,6 +348,14 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     hotter still than the preamp it feeds. Volume only, and applied LAST in the stage — AFTER the
     dry/wet mix. One number for the whole stage: applied before the mix it would ride the wet side
     alone and move a blend the player was told to hold.
+  - `high_pass`, `low_pass` — the pack's own filters, which the device always plays with and no knob
+    moves: `{ "hz": 80, "db_per_oct": 24, "placement": "post" }`. A capture that booms under the
+    guitar, or fizzes over it, is corrected once here for every player. Butterworth; `db_per_oct` is
+    the order times 6, from 6 to 48. `placement` takes a tone knob's two words: `pre` filters the guitar
+    where `input_db` meets it, before anything splits, and `post` what the stage leaves with, after the
+    dry/wet mix, where `output_db` is applied; absent = `post`, and any other word is skipped. Absent =
+    no filter; one spelled badly (not an object, no positive `hz`, a slope off the 6 dB steps) is no
+    filter either, never a refusal.
 
   Neither key needs a schema change on its own. They are additive, so a reader that has not met them
   plays exactly as it plays today — that is the status quo and not a regression. Packs written before
