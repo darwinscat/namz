@@ -219,6 +219,21 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
         // additive, and a manifest does not become unplayable for spelling one of them badly.
         if (auto g = sj.find ("input_db");  g != sj.end() && g->is_number()) st.inputDb  = g->get<double>();
         if (auto g = sj.find ("output_db"); g != sj.end() && g->is_number()) st.outputDb = g->get<double>();
+        // The pack's own filters. Additive like the levels: one spelled badly is no filter (hz 0), never a
+        // refusal — a slope that is not an integer, or no positive frequency.
+        const auto filterOf = [] (const nlohmann::json& s, const char* key, Stage::Filter& f)
+        {
+            const auto it = s.find (key);
+            if (it == s.end() || ! it->is_object()) return;
+            const double hz = detail::jnum (*it, "hz");
+            const int slope = detail::jint (*it, "db_per_oct");
+            if (! (hz > 0.0) || ! std::isfinite (hz) || slope <= 0) return;
+            f.hz        = hz;
+            f.dbPerOct  = slope;
+            f.placement = detail::jstr (*it, "placement", "post");
+        };
+        filterOf (sj, "high_pass", st.highPass);
+        filterOf (sj, "low_pass",  st.lowPass);
 
         if (st.kind == StageKind::Nam)
         {

@@ -824,6 +824,25 @@ struct Stage
     // exactly as it plays today.
     double inputDb  = 0.0;
     double outputDb = 0.0;
+    // THE PACK'S OWN FILTERS — a high-pass and a low-pass the device always plays with, no knob: a
+    // capture that booms under the guitar or fizzes over it is corrected once, here, for every player.
+    // Butterworth, `dbPerOct` the order times 6, from 6 to 48. `placement` says where, with the same
+    // two words as a tone knob's: "pre" filters the guitar where `inputDb` meets it, before anything
+    // splits (the dry side of a blend included, for the reason given above), and "post" what the stage
+    // leaves with, after the dry/wet mix, where `outputDb` is applied. Any other placement is SKIPPED
+    // by a player, as a tone knob's is. `hz` <= 0 = no filter, which is how a stage without one reads.
+    //
+    // Optional, absent = none, and `schema` stays what it is — a reader that does not know them plays
+    // the pack unfiltered, exactly as it plays today.
+    struct Filter
+    {
+        double      hz        = 0.0;
+        int         dbPerOct  = 0;
+        std::string placement = "post";
+
+        bool on() const { return hz > 0.0 && dbPerOct >= 6 && dbPerOct <= 48 && dbPerOct % 6 == 0; }
+    };
+    Filter highPass, lowPass;
     Device device;                                  // Nam: controls + files (the selectable matrix)
     std::vector<Tone> tone;                         // Nam: linear knobs shipped as DSP, not as axes
     std::vector<Blend> blend;                       // Nam: dry/wet mix knobs — the player mixes, see above

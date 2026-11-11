@@ -6,6 +6,15 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [5.1.0] — 2026-11-11 — a pack that carries its own high-pass and low-pass
+
+### Added
+- **`chain[].high_pass` and `chain[].low_pass` — the pack's own filters**, `{ hz, db_per_oct, placement }`:
+  a Butterworth high-pass and low-pass the device always plays with, no knob, `pre` (where `input_db` meets
+  the guitar) or `post` (after the dry/wet mix). `Stage::highPass` / `lowPass` in the reference, read and
+  written beside the levels. Additive, so `schema` stays 5: a reader that does not know them plays the pack
+  unfiltered, as today.
+
 ## [5.0.0] — 2026-10-31 — a knob that moves another knob's band, and a model that says how late it is
 
 Breaking: the rig manifest's `schema` is now **5**. A schema-4 reader meets a frequency knob, finds no
@@ -569,6 +578,7 @@ First stable release of the C++ reference.
 - **Lossless** to float32, **deterministic** (byte-identical across runs, platforms, and — via the
   conformance vectors — language ports), and **robust** (every malformed input is rejected cleanly).
 
+[5.1.0]: https://github.com/darwinscat/namz/releases/tag/v5.1.0
 [5.0.0]: https://github.com/darwinscat/namz/releases/tag/v5.0.0
 [4.4.1]: https://github.com/darwinscat/namz/releases/tag/v4.4.1
 [4.4.0]: https://github.com/darwinscat/namz/releases/tag/v4.4.0

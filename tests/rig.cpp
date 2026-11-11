@@ -1537,6 +1537,65 @@ int main()
             "a level that is not a number reads as 0, and the manifest still loads");
     }
 
+    // --- the pack's own filters: `chain[].high_pass` and `chain[].low_pass` ------------------------
+    {
+        Rig rig;
+        rig.rigId = "dc-flt"; rig.name = "Filters";
+        Stage st; st.kind = StageKind::Nam; st.slot = "amp";
+        st.inputDb = -6.0;
+        st.highPass = { 80.0, 24, "post" };
+        st.lowPass  = { 9000.0, 12, "pre" };
+        st.device.files.push_back ({ "a.namz", { { "gain", "0" } }, 0.0 });
+        rig.chain.push_back (st);
+
+        bool valid = false;
+        const auto text = writeManifest (rig);
+        const auto back = loadRigManifest (text, &valid);
+        ok (valid && back.chain.size() == 1
+            && back.chain[0].highPass.hz == 80.0 && back.chain[0].highPass.dbPerOct == 24
+            && back.chain[0].highPass.placement == "post" && back.chain[0].highPass.on()
+            && back.chain[0].lowPass.hz == 9000.0 && back.chain[0].lowPass.dbPerOct == 12
+            && back.chain[0].lowPass.placement == "pre" && back.chain[0].lowPass.on(),
+            "both filters round-trip, slope and placement with them");
+        ok (text.find ("\"input_db\": -6.0") < text.find ("\"high_pass\"")
+            && text.find ("\"high_pass\"") < text.find ("\"files\""),
+            "they are stage keys, written beside the levels");
+
+        // No filter, no key.
+        Rig plain = rig;
+        plain.chain[0].highPass = {}; plain.chain[0].lowPass = {};
+        const auto quiet = writeManifest (plain);
+        ok (quiet.find ("\"high_pass\"") == std::string::npos && quiet.find ("\"low_pass\"") == std::string::npos,
+            "no filter, no key");
+
+        // A pack from before the keys plays unfiltered.
+        auto j = nlohmann::json::parse (text);
+        j["chain"][0].erase ("high_pass");
+        j["chain"][0].erase ("low_pass");
+        bool okOld = false;
+        const auto old = loadRigManifest (j.dump(), &okOld);
+        ok (okOld && old.chain.size() == 1 && ! old.chain[0].highPass.on() && ! old.chain[0].lowPass.on(),
+            "a manifest from before the keys loads, with no filter");
+
+        // Placement left out is "post"; a slope a player cannot build reads but is not on.
+        j = nlohmann::json::parse (text);
+        j["chain"][0]["high_pass"].erase ("placement");
+        j["chain"][0]["low_pass"]["db_per_oct"] = 20;
+        bool okOdd = false;
+        const auto odd = loadRigManifest (j.dump(), &okOdd);
+        ok (okOdd && odd.chain.size() == 1 && odd.chain[0].highPass.placement == "post" && odd.chain[0].highPass.on()
+            && odd.chain[0].lowPass.dbPerOct == 20 && ! odd.chain[0].lowPass.on(),
+            "no placement is post; a slope off the 6 dB steps is not a filter a player builds");
+
+        // Spelled badly is no filter, never a refusal.
+        j["chain"][0]["high_pass"] = "80";
+        j["chain"][0]["low_pass"]  = { { "hz", -5.0 }, { "db_per_oct", 12 } };
+        bool okJunk = false;
+        const auto junk = loadRigManifest (j.dump(), &okJunk);
+        ok (okJunk && junk.chain.size() == 1 && ! junk.chain[0].highPass.on() && ! junk.chain[0].lowPass.on(),
+            "a filter that is not an object, or has no positive frequency, is none, and the manifest still loads");
+    }
+
     std::printf (failures == 0 ? "ALL RIG TESTS PASSED\n" : "%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }
