@@ -61,9 +61,9 @@
 #define NAMZ_H
 
 #define NAMZ_VERSION_MAJOR 5
-#define NAMZ_VERSION_MINOR 1
+#define NAMZ_VERSION_MINOR 2
 #define NAMZ_VERSION_PATCH 0
-#define NAMZ_VERSION "5.1.0"
+#define NAMZ_VERSION "5.2.0"
 
 #include <cstddef>
 #include <cstdint>

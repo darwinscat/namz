@@ -294,6 +294,28 @@ inline Rig loadRigManifest (const std::string& manifestText, bool* ok = nullptr)
                         fe.inputLagSamples = n;
                     if (auto p = fj.find ("polarity"); p != fj.end() && detail::jintIn (*p, -1, 1, n) && n != 0)
                         fe.polarity = n;
+                    // The clean match, read whole or not at all: a lag and a polarity by the rules just above,
+                    // both required, and `allpass_hz` (absent = no sections) a list of at most two finite numbers
+                    // above 0 Hz. Any part missing or unreadable leaves the entry with no match — it plays by its
+                    // own readings — and, like them, never refuses the manifest.
+                    if (auto c = fj.find ("clean_match"); c != fj.end() && c->is_object())
+                    {
+                        FileEntry::CleanMatch cm;
+                        const auto l = c->find ("lag_samples"), p = c->find ("polarity"), a = c->find ("allpass_hz");
+                        bool good = l != c->end() && detail::jintIn (*l, -kMaxLagSamples, kMaxLagSamples, cm.lagSamples)
+                                 && p != c->end() && detail::jintIn (*p, -1, 1, cm.polarity) && cm.polarity != 0;
+                        if (good && a != c->end())
+                        {
+                            good = a->is_array() && a->size() <= 2;
+                            for (std::size_t k = 0; good && k < a->size(); ++k)
+                            {
+                                const auto& hz = (*a)[k];
+                                good = hz.is_number() && std::isfinite (hz.get<double>()) && hz.get<double>() > 0.0;
+                                if (good) cm.allpassHz.push_back (hz.get<double>());
+                            }
+                        }
+                        if (good) fe.cleanMatch = std::move (cm);
+                    }
                     // How it was trained: a whole, non-negative number of epochs, and an ESR that is a
                     // finite number not below zero. Anything else is not a statement this format makes.
                     if (auto e = fj.find ("epochs"); e != fj.end() && e->is_number_unsigned()

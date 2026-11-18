@@ -401,6 +401,50 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     the two sum in phase across the crossover. Without them it must measure for itself, or not offer the
     mix. A player that does not mix reads neither. Both keys are additive; on their own they would not
     move `schema`.
+  - `clean_match` — how that player lines the clean up under THIS model when a lag and a sign are not
+    enough: `{ "lag_samples": 25, "polarity": -1, "allpass_hz": [39.03, 132.2] }`. A device whose low end
+    TURNS with frequency — a coupling cap, a tone stack — is lined up with its input at its leading edge
+    by `input_lag_samples` / `polarity` and still slides out of phase with the clean below the crossover,
+    where the mix sums the two, and the low sum dips there. The clean match is the filter on the clean leg
+    that turns as the device does: a delay, a sign and up to two first-order all-passes — unity gain at
+    every frequency, so only the phase moves. Fitted once, by the capture side or a tool, from the model's
+    own response at low tones (the reference fit plays sines across a bass's low end, 30 to 260 Hz, and
+    states a match only where one beats the entry's own `input_lag_samples` / `polarity`).
+    - `lag_samples` — how late the clean leg is tapped, at the file's own sample rate, counted from the
+      model's INPUT exactly as `input_lag_samples` is: a JSON integer token, at most 48000 either way.
+      Required.
+    - `polarity` — the clean leg's sign: `1` as it is, `-1` inverted, as a JSON integer. Required.
+    - `allpass_hz` — the corners, in Hz, of the first-order all-pass sections the clean leg runs through:
+      a list of zero, one or two finite numbers above 0. Optional; absent = `[]`, no sections.
+
+    A player that mixes taps its clean leg by THIS lag and polarity, through these sections, IN PLACE OF
+    `input_lag_samples` / `polarity` — the lag converted to its own rate as that one is, a negative one
+    delaying the model instead. The models' alignment against each other — `lag_samples`, and
+    `input_lag_samples` between files — never reads it: it is the clean leg's alone. Absent = not fitted:
+    the clean leg is tapped by `input_lag_samples` / `polarity`, as without it. ALL OR NOTHING: a required
+    part missing or any part unreadable — a lag of the wrong kind (`3.0`, `"3"`) or past the bound, a
+    polarity other than `1` / `-1`, an `allpass_hz` that is not a list, holds more than two, or holds
+    anything but a finite number above 0 — and the entry has no clean match. Never a refusal of the
+    manifest: the same rule as `input_lag_samples` and `polarity`. Since 5.2.0; additive, so `schema`
+    stays 5, and a reader that does not know the key plays the pack as before.
+
+    **Computing a section.** Each corner `fc` is one section with the analog prototype
+    `H(s) = (1 − s/ωc) / (1 + s/ωc)`, `ωc = 2π·fc`: unity magnitude, 0° at DC, −90° at the corner, falling
+    toward −180° above it — the phase LAGS, as a delay's does, and the section passes DC as it is. A player
+    discretizes it at the rate it PLAYS at, `fs` (not the file's), by the bilinear transform prewarped at
+    the corner:
+
+    ```
+    t    = tan(π · fc / fs)
+    c    = (t − 1) / (t + 1)
+    A(z) = (c + z⁻¹) / (1 + c·z⁻¹)          y[n] = c·x[n] + x[n−1] − c·y[n−1]
+    ```
+
+    Its response at a frequency `f` is `(1 − jΩ) / (1 + jΩ)`, `Ω = tan(π·f/fs) / tan(π·fc/fs)` — the
+    prototype's exactly at the corner, and the form the reference fit scores. The clean leg is the clean
+    input delayed by the lag, multiplied by the polarity and run through the sections in series, in any
+    order (they commute). A corner at or above 0.49·fs is played as no section — the reference player's
+    rule (felitronics-guitar-core's `rigplayer`) for a rate too low to hold it.
   - `epochs` / `esr` — how this model was trained: the number of epochs its weights have (a
     non-negative integer) and the ESR — error-to-signal ratio, lower is closer — the trainer reported
     for it (a number, 0 or more). Written by the capture side from its own records, for a person reading

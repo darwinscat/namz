@@ -21,6 +21,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <map>
 #include <cmath>
 #include <string>
@@ -395,6 +396,22 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                                        && *fe.inputLagSamples <= kMaxLagSamples)
                     fj["input_lag_samples"] = *fe.inputLagSamples;
                 if (fe.polarity && (*fe.polarity == 1 || *fe.polarity == -1)) fj["polarity"] = *fe.polarity;
+                // The clean match, whole or not at all — the loader's rule: a part it would drop drops the
+                // match, never only that part. No corners = no `allpass_hz` key (absent is the empty list),
+                // and the corners are written as they are, unrounded: they are a fit, and the player designs
+                // its sections from exactly these numbers.
+                if (const auto& cm = fe.cleanMatch;
+                    cm && cm->lagSamples >= -kMaxLagSamples && cm->lagSamples <= kMaxLagSamples
+                       && (cm->polarity == 1 || cm->polarity == -1) && cm->allpassHz.size() <= 2
+                       && std::all_of (cm->allpassHz.begin(), cm->allpassHz.end(),
+                                       [] (double hz) { return std::isfinite (hz) && hz > 0.0; }))
+                {
+                    nlohmann::ordered_json cj;
+                    cj["lag_samples"] = cm->lagSamples;
+                    cj["polarity"]    = cm->polarity;
+                    if (! cm->allpassHz.empty()) cj["allpass_hz"] = cm->allpassHz;
+                    fj["clean_match"] = std::move (cj);
+                }
                 if (fe.epochs)     fj["epochs"]      = *fe.epochs;
                 if (fe.esr)        fj["esr"]         = *fe.esr;
                 files.push_back (std::move (fj));
