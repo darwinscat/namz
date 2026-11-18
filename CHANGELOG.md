@@ -6,6 +6,21 @@ All notable changes to **namz** are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The C++ reference versions independently; each language port
 carries its own version.
 
+## [5.2.0] — 2026-11-18 — a capture's clean match, fitted once and carried in the pack
+
+### Added
+- **`files[].clean_match` — how a player that mixes the clean input under a model lines the clean leg up**,
+  `{ lag_samples, polarity, allpass_hz }`: the lag the clean leg is tapped at (counted from the model's input,
+  as `input_lag_samples` is, 0 to 48000 — never early), its sign, and the corners (at least 1 Hz) of up to two
+  first-order all-passes it runs through.
+  A bass crossover's clean match used to be fitted by every player instance whenever a pack loaded; now the
+  capture side or a tool fits it once and writes it down, and a player taps its clean leg by it in place of
+  `input_lag_samples` / `polarity`. NAMZ-FORMAT.md pins the all-pass (prototype, sign, discretization) so
+  every player builds the same filter. `FileEntry::cleanMatch` in the reference, read and written whole or
+  not at all: any part missing or unreadable leaves the entry with no match, and never refuses the manifest.
+  Additive, so `schema` stays 5: a pack without it writes byte for byte as before, and a reader that does
+  not know it plays the pack as today.
+
 ## [5.1.0] — 2026-11-11 — a pack that carries its own high-pass and low-pass
 
 ### Added
@@ -578,6 +593,7 @@ First stable release of the C++ reference.
 - **Lossless** to float32, **deterministic** (byte-identical across runs, platforms, and — via the
   conformance vectors — language ports), and **robust** (every malformed input is rejected cleanly).
 
+[5.2.0]: https://github.com/darwinscat/namz/releases/tag/v5.2.0
 [5.1.0]: https://github.com/darwinscat/namz/releases/tag/v5.1.0
 [5.0.0]: https://github.com/darwinscat/namz/releases/tag/v5.0.0
 [4.4.1]: https://github.com/darwinscat/namz/releases/tag/v4.4.1

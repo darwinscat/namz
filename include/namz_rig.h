@@ -105,6 +105,12 @@ inline constexpr int kRigSchema = 5;
 // believed the number would allocate the delay line it asks for.
 inline constexpr int kMaxLagSamples = 48000;
 
+// The lowest corner a `clean_match` all-pass may have, in Hz. Below it a section is no filter a player can
+// build: at 48 kHz a corner under about 2e-4 Hz gives a coefficient that rounds, in float, to exactly -1 —
+// a pole on the unit circle — and across the audible band a corner under 1 Hz is all but a polarity flip
+// (-174 degrees at 20 Hz for 1 Hz), which `polarity` already states.
+inline constexpr double kMinCleanMatchHz = 1.0;
+
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
 // ---------------------------------------------------------------------------------------------
@@ -246,6 +252,26 @@ struct FileEntry
     // person reading the pack; a player plays the same either way. Not stated = not known.
     std::optional<int> epochs;
     std::optional<double> esr;
+    // HOW THE CLEAN INPUT IS LINED UP UNDER THIS MODEL, for a player that mixes the two. `inputLagSamples` and
+    // `polarity` line the clean up with the model's leading edge; a device whose low end TURNS with frequency
+    // (a coupling cap, a tone stack) leaves a clean leg lined up by them alone sliding out of phase below a
+    // crossover, and the low sum dips there. The clean match is the filter on the clean leg that turns as the
+    // device does: how late it is tapped, its sign, and up to two first-order all-passes — unity gain at every
+    // frequency, so only the phase moves. FITTED once, by the capture side or a tool, from the model's own
+    // response at low tones. A player that mixes taps its clean leg by THIS lag and polarity, through these
+    // sections, in place of `inputLagSamples` / `polarity`; the models' alignment against each other
+    // (`lagSamples`, and `inputLagSamples` between files) never reads it. Not stated = not fitted: the clean leg
+    // is tapped by `inputLagSamples` / `polarity`, as without one. ALL OR NOTHING: the loader reads a lag from 0
+    // to kMaxLagSamples (the clean leg is never tapped early), a polarity of +1 or -1 and at most two finite
+    // corners of at least kMinCleanMatchHz, or none of it. The all-pass itself — prototype, sign,
+    // discretization — is pinned in NAMZ-FORMAT.md.
+    struct CleanMatch
+    {
+        int lagSamples = 0;               // at the file's own rate, counted from the model's INPUT as inputLagSamples is; >= 0
+        int polarity = 1;                 // +1 the clean leg as it is, -1 inverted
+        std::vector<double> allpassHz;    // the sections' corners, Hz: none, one or two
+    };
+    std::optional<CleanMatch> cleanMatch;
 };
 
 struct Device

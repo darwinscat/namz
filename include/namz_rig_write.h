@@ -21,6 +21,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <map>
 #include <cmath>
 #include <string>
@@ -104,8 +105,9 @@ inline std::map<std::string, std::string> stampMeta (const Rig& rig, const Stage
 //
 //   * keys in the order the format lists them — `ordered_json` keeps insertion order, and the writer
 //     inserts in that order;
-//   * a LEAF object — one whose values are scalars, arrays of scalars, or objects of scalars — on ONE
-//     line: a control, a file entry, a band, a position, `gear`, `grid`, `trusted`;
+//   * a LEAF object — one whose values are scalars, arrays of scalars, or leaves themselves — on ONE
+//     line: a control, a file entry (its `clean_match` inline in it), a band, a position, `gear`, `grid`,
+//     `trusted`;
 //   * an array of scalars inline, wrapped at `width` with the continuation aligned under its first
 //     element — a dial's twenty-one values, a curve's points;
 //   * inside the objects whose shape the format fixes, the scalars that belong together share a line
@@ -133,11 +135,13 @@ namespace detail
         for (const auto& kv : v.items()) if (! isScalar (kv.value())) return false;
         return true;
     }
+    // A leaf may hold leaves — a file entry its `clean_match`, which holds its corners — and emitInline
+    // writes them all on the one line, recursing as deep as the object goes.
     inline bool isLeaf (const OJ& v)
     {
         if (! v.is_object()) return false;
         for (const auto& kv : v.items())
-            if (! (isScalar (kv.value()) || isScalarArray (kv.value()) || isScalarObject (kv.value()))) return false;
+            if (! (isScalar (kv.value()) || isScalarArray (kv.value()) || isLeaf (kv.value()))) return false;
         return true;
     }
 
@@ -395,6 +399,22 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                                        && *fe.inputLagSamples <= kMaxLagSamples)
                     fj["input_lag_samples"] = *fe.inputLagSamples;
                 if (fe.polarity && (*fe.polarity == 1 || *fe.polarity == -1)) fj["polarity"] = *fe.polarity;
+                // The clean match, whole or not at all — the loader's rule: a part it would drop drops the
+                // match, never only that part. No corners = no `allpass_hz` key (absent is the empty list),
+                // and the corners are written as they are, unrounded: they are a fit, and the player designs
+                // its sections from exactly these numbers.
+                if (const auto& cm = fe.cleanMatch;
+                    cm && cm->lagSamples >= 0 && cm->lagSamples <= kMaxLagSamples
+                       && (cm->polarity == 1 || cm->polarity == -1) && cm->allpassHz.size() <= 2
+                       && std::all_of (cm->allpassHz.begin(), cm->allpassHz.end(),
+                                       [] (double hz) { return std::isfinite (hz) && hz >= kMinCleanMatchHz; }))
+                {
+                    nlohmann::ordered_json cj;
+                    cj["lag_samples"] = cm->lagSamples;
+                    cj["polarity"]    = cm->polarity;
+                    if (! cm->allpassHz.empty()) cj["allpass_hz"] = cm->allpassHz;
+                    fj["clean_match"] = std::move (cj);
+                }
                 if (fe.epochs)     fj["epochs"]      = *fe.epochs;
                 if (fe.esr)        fj["esr"]         = *fe.esr;
                 files.push_back (std::move (fj));
