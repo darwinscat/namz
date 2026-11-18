@@ -418,8 +418,8 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     - `allpass_hz` — the corners, in Hz, of the first-order all-pass sections the clean leg runs through:
       a list of zero, one or two finite numbers of at least 1 Hz. Optional; absent = `[]`, no sections.
       The floor is not taste: at 48 kHz a corner under about 2e-4 Hz gives a coefficient `c` (below) that
-      rounds, in float, to exactly −1 — a pole on the unit circle — and a corner under 1 Hz turns nothing
-      in the audible band anyway.
+      rounds, in float, to exactly −1 — a pole on the unit circle — and across the audible band a corner
+      under 1 Hz is all but a polarity flip (−174° at 20 Hz for 1 Hz), which `polarity` already states.
 
     A player that mixes taps its clean leg by THIS lag and polarity, through these sections, IN PLACE OF
     `input_lag_samples` / `polarity` — the lag converted to its own rate as that one is. The models'

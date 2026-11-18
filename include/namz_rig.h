@@ -107,7 +107,8 @@ inline constexpr int kMaxLagSamples = 48000;
 
 // The lowest corner a `clean_match` all-pass may have, in Hz. Below it a section is no filter a player can
 // build: at 48 kHz a corner under about 2e-4 Hz gives a coefficient that rounds, in float, to exactly -1 —
-// a pole on the unit circle — and a corner that low turns nothing in the audible band anyway.
+// a pole on the unit circle — and across the audible band a corner under 1 Hz is all but a polarity flip
+// (-174 degrees at 20 Hz for 1 Hz), which `polarity` already states.
 inline constexpr double kMinCleanMatchHz = 1.0;
 
 // ---------------------------------------------------------------------------------------------
