@@ -1189,7 +1189,7 @@ int main()
                      {"file":"b.namz","settings":{},"input_lag_samples":30,"polarity":1,"epochs":800,
                       "clean_match":{"lag_samples":25,"polarity":-1,"allpass_hz":[39.5,132]}},
                      {"file":"c.namz","settings":{},"clean_match":{"lag_samples":0,"polarity":1}},
-                     {"file":"d.namz","settings":{},"clean_match":{"lag_samples":-48000,"polarity":1,"allpass_hz":[]}},
+                     {"file":"d.namz","settings":{},"clean_match":{"lag_samples":7,"polarity":1,"allpass_hz":[]}},
                      {"file":"e.namz","settings":{},"clean_match":{"lag_samples":48000,"polarity":-1,"allpass_hz":[41.2]}},
                      {"file":"f.namz","settings":{},"input_lag_samples":37,"polarity":-1,
                       "clean_match":{"lag_samples":3,"allpass_hz":[40]}},
@@ -1213,12 +1213,17 @@ int main()
                      {"file":"w.namz","settings":{},"clean_match":[25,-1]},
                      {"file":"x.namz","settings":{},"clean_match":true},
                      {"file":"y.namz","settings":{},"clean_match":{}},
-                     {"file":"z.namz","settings":{},"clean_match":{"lag_samples":true,"polarity":true}}]}]})";
+                     {"file":"z.namz","settings":{},"clean_match":{"lag_samples":true,"polarity":true}},
+                     {"file":"0.namz","settings":{},"clean_match":{"lag_samples":-1,"polarity":1}},
+                     {"file":"1.namz","settings":{},"clean_match":{"lag_samples":-48000,"polarity":-1}},
+                     {"file":"2.namz","settings":{},"clean_match":{"lag_samples":3,"polarity":1,"allpass_hz":[0.5]}},
+                     {"file":"3.namz","settings":{},"clean_match":{"lag_samples":3,"polarity":1,"allpass_hz":[40,0.0002]}},
+                     {"file":"4.namz","settings":{},"clean_match":{"lag_samples":3,"polarity":1,"allpass_hz":[1]}}]}]})";
         bool v = false;
         const auto r = loadRigManifest (text, &v);
-        ok (v && r.chain.size() == 1 && r.chain[0].device.files.size() == 26,
-            "twenty-six files, and no clean match of any shape refuses the manifest");
-        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 26)
+        ok (v && r.chain.size() == 1 && r.chain[0].device.files.size() == 31,
+            "thirty-one files, and no clean match of any shape refuses the manifest");
+        if (r.chain.size() == 1 && r.chain[0].device.files.size() == 31)
         {
             const auto& f = r.chain[0].device.files;
             ok (! f[0].cleanMatch && f[0].inputLagSamples == 37 && f[0].polarity == -1,
@@ -1229,10 +1234,16 @@ int main()
                 "a lag, an inversion and two corners (an integer token is a corner too), beside the entry's own readings");
             ok (f[2].cleanMatch && f[2].cleanMatch->lagSamples == 0 && f[2].cleanMatch->polarity == 1
                 && f[2].cleanMatch->allpassHz.empty(), "0 samples is a reading, and no corners = no sections");
-            ok (f[3].cleanMatch && f[3].cleanMatch->lagSamples == -48000 && f[3].cleanMatch->allpassHz.empty()
+            ok (f[3].cleanMatch && f[3].cleanMatch->lagSamples == 7 && f[3].cleanMatch->allpassHz.empty()
                 && f[4].cleanMatch && f[4].cleanMatch->lagSamples == 48000 && f[4].cleanMatch->polarity == -1
                 && f[4].cleanMatch->allpassHz == std::vector<double> { 41.2 },
-                "the bound is inclusive both ways, an empty list is no sections, one corner is one section");
+                "the bound 48000 is a reading, an empty list is no sections, one corner is one section");
+            ok (! f[26].cleanMatch && ! f[27].cleanMatch,
+                "the clean leg is never tapped early: a negative lag, -1 or -48000, is not a reading");
+            ok (! f[28].cleanMatch && ! f[29].cleanMatch,
+                "a corner below 1 Hz (0.5, 0.0002 — a coefficient that rounds to -1): no match");
+            ok (f[30].cleanMatch && f[30].cleanMatch->allpassHz == std::vector<double> { 1.0 },
+                "a corner of exactly 1 Hz is a reading");
             ok (! f[5].cleanMatch && f[5].inputLagSamples == 37 && f[5].polarity == -1,
                 "all or nothing: no polarity, no match — and the entry still has its own readings");
             ok (! f[6].cleanMatch, "no lag, no match");
@@ -1254,7 +1265,7 @@ int main()
             bool again = false;
             const auto r2 = loadRigManifest (out, &again);
             ok (again && writeManifest (r2) == out, "write(load(write(x))) is a fixed point, byte for byte");
-            if (again && r2.chain.size() == 1 && r2.chain[0].device.files.size() == 26)
+            if (again && r2.chain.size() == 1 && r2.chain[0].device.files.size() == 31)
             {
                 const auto& g = r2.chain[0].device.files;
                 bool same = true;
@@ -1268,13 +1279,13 @@ int main()
             std::size_t count = 0;
             for (auto at = out.find ("\"clean_match\""); at != std::string::npos; at = out.find ("\"clean_match\"", at + 1))
                 ++count;
-            ok (count == 4, "four matches in, four out: nothing the loader dropped is written");
+            ok (count == 5, "five matches in, five out: nothing the loader dropped is written");
             const auto full = out.find ("\"clean_match\": { \"lag_samples\": 25, \"polarity\": -1, \"allpass_hz\": [39.5, 132.0] }");
             const auto pol = out.find ("\"polarity\": 1"), ep = out.find ("\"epochs\": 800");
             ok (full != std::string::npos && pol < full && full < ep,
                 "written on the file entry as one object, after the entry's own polarity and before its epochs");
             ok (out.find ("\"clean_match\": { \"lag_samples\": 0, \"polarity\": 1 }") != std::string::npos
-                && out.find ("\"clean_match\": { \"lag_samples\": -48000, \"polarity\": 1 }") != std::string::npos
+                && out.find ("\"clean_match\": { \"lag_samples\": 7, \"polarity\": 1 }") != std::string::npos
                 && out.find ("\"allpass_hz\": [41.2]") != std::string::npos
                 && out.find ("\"allpass_hz\": []") == std::string::npos,
                 "no corners = no `allpass_hz` key (absent is the empty list)");
@@ -1293,11 +1304,12 @@ int main()
             return fe;
         };
         const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
-        st.device.files = { entry ("a.namz", kMaxLagSamples + 1, 1, {}), entry ("b.namz", -kMaxLagSamples - 1, 1, {}),
+        st.device.files = { entry ("a.namz", kMaxLagSamples + 1, 1, {}), entry ("b.namz", -1, 1, {}),
                             entry ("c.namz", 3, 0, {}),                  entry ("d.namz", 3, 2, {}),
                             entry ("e.namz", 3, 1, { 40.0, 80.0, 160.0 }), entry ("f.namz", 3, 1, { nan }),
                             entry ("g.namz", 3, 1, { 40.0, inf }),       entry ("h.namz", 3, 1, { 0.0 }),
-                            entry ("i.namz", 3, 1, { -40.0 }),           entry ("j.namz", 12, -1, { 40.0, 80.0 }) };
+                            entry ("i.namz", 3, 1, { -40.0 }),           entry ("j.namz", 12, -1, { 40.0, 80.0 }),
+                            entry ("k.namz", 3, 1, { 40.0, 0.5 }) };
         rig.chain.push_back (st);
         const auto junk = writeManifest (rig);
         std::size_t lags = 0;
@@ -1307,9 +1319,28 @@ int main()
         ok (junk.find ("\"clean_match\"") == junk.rfind ("\"clean_match\"")
             && junk.find ("\"clean_match\": { \"lag_samples\": 12, \"polarity\": -1, \"allpass_hz\": [40.0, 80.0] }")
                    != std::string::npos,
-            "a lag past the bound, a polarity of 0 or 2, three corners, a corner not finite or not above 0 Hz: "
+            "a lag past the bound or below 0, a polarity of 0 or 2, three corners, a corner not finite or under 1 Hz: "
             "none of those is written, the good one is");
-        ok (lags == 10, "…and a match dropped takes nothing else of its entry with it");
+        ok (lags == 11, "…and a match dropped takes nothing else of its entry with it");
+    }
+
+    // --- a file entry with a clean match is still a LEAF: one line, wrapped at the width like any long entry ----
+    {
+        const std::string text = R"({"format":"orbitrig","chain":[{"kind":"nam","slot":"amp",
+            "files":[{"file":"b.namz","settings":{"gain":"300"},
+                      "clean_match":{"lag_samples":25,"polarity":-1,"allpass_hz":[39.5,132]}},
+                     {"file":"c.namz","settings":{},"clean_match":{"lag_samples":2,"polarity":1,"allpass_hz":[40]}}]}]})";
+        const std::string files = R"(      "files": [
+        { "file": "b.namz", "settings": { "gain": "300" },
+          "clean_match": { "lag_samples": 25, "polarity": -1, "allpass_hz": [39.5, 132.0] } },
+        { "file": "c.namz", "settings": {},
+          "clean_match": { "lag_samples": 2, "polarity": 1, "allpass_hz": [40.0] } }
+      ]
+)";
+        bool v = false;
+        const auto out = writeManifest (loadRigManifest (text, &v));
+        ok (v && out.find (files) != std::string::npos,
+            "an entry whose clean match has corners is written in the leaf form, the match inline on its line");
     }
 
     // --- a pack without a clean match writes exactly what the 5.1.0 writer wrote ---------------------------------

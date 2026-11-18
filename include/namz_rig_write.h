@@ -105,8 +105,9 @@ inline std::map<std::string, std::string> stampMeta (const Rig& rig, const Stage
 //
 //   * keys in the order the format lists them — `ordered_json` keeps insertion order, and the writer
 //     inserts in that order;
-//   * a LEAF object — one whose values are scalars, arrays of scalars, or objects of scalars — on ONE
-//     line: a control, a file entry, a band, a position, `gear`, `grid`, `trusted`;
+//   * a LEAF object — one whose values are scalars, arrays of scalars, or leaves themselves — on ONE
+//     line: a control, a file entry (its `clean_match` inline in it), a band, a position, `gear`, `grid`,
+//     `trusted`;
 //   * an array of scalars inline, wrapped at `width` with the continuation aligned under its first
 //     element — a dial's twenty-one values, a curve's points;
 //   * inside the objects whose shape the format fixes, the scalars that belong together share a line
@@ -134,11 +135,13 @@ namespace detail
         for (const auto& kv : v.items()) if (! isScalar (kv.value())) return false;
         return true;
     }
+    // A leaf may hold leaves — a file entry its `clean_match`, which holds its corners — and emitInline
+    // writes them all on the one line, recursing as deep as the object goes.
     inline bool isLeaf (const OJ& v)
     {
         if (! v.is_object()) return false;
         for (const auto& kv : v.items())
-            if (! (isScalar (kv.value()) || isScalarArray (kv.value()) || isScalarObject (kv.value()))) return false;
+            if (! (isScalar (kv.value()) || isScalarArray (kv.value()) || isLeaf (kv.value()))) return false;
         return true;
     }
 
@@ -401,10 +404,10 @@ inline std::string writeManifest (const Rig& rig, int indent = 2)
                 // and the corners are written as they are, unrounded: they are a fit, and the player designs
                 // its sections from exactly these numbers.
                 if (const auto& cm = fe.cleanMatch;
-                    cm && cm->lagSamples >= -kMaxLagSamples && cm->lagSamples <= kMaxLagSamples
+                    cm && cm->lagSamples >= 0 && cm->lagSamples <= kMaxLagSamples
                        && (cm->polarity == 1 || cm->polarity == -1) && cm->allpassHz.size() <= 2
                        && std::all_of (cm->allpassHz.begin(), cm->allpassHz.end(),
-                                       [] (double hz) { return std::isfinite (hz) && hz > 0.0; }))
+                                       [] (double hz) { return std::isfinite (hz) && hz >= kMinCleanMatchHz; }))
                 {
                     nlohmann::ordered_json cj;
                     cj["lag_samples"] = cm->lagSamples;

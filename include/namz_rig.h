@@ -105,6 +105,11 @@ inline constexpr int kRigSchema = 5;
 // believed the number would allocate the delay line it asks for.
 inline constexpr int kMaxLagSamples = 48000;
 
+// The lowest corner a `clean_match` all-pass may have, in Hz. Below it a section is no filter a player can
+// build: at 48 kHz a corner under about 2e-4 Hz gives a coefficient that rounds, in float, to exactly -1 —
+// a pole on the unit circle — and a corner that low turns nothing in the audible band anyway.
+inline constexpr double kMinCleanMatchHz = 1.0;
+
 // ---------------------------------------------------------------------------------------------
 // The `controls` spec string (NAMZ-FORMAT conventional key): "name:role=v1|v2|…; name:role=…"
 // ---------------------------------------------------------------------------------------------
@@ -255,12 +260,13 @@ struct FileEntry
     // response at low tones. A player that mixes taps its clean leg by THIS lag and polarity, through these
     // sections, in place of `inputLagSamples` / `polarity`; the models' alignment against each other
     // (`lagSamples`, and `inputLagSamples` between files) never reads it. Not stated = not fitted: the clean leg
-    // is tapped by `inputLagSamples` / `polarity`, as without one. ALL OR NOTHING: the loader reads a lag within
-    // ±kMaxLagSamples, a polarity of +1 or -1 and at most two finite corners above 0 Hz, or none of it. The
-    // all-pass itself — prototype, sign, discretization — is pinned in NAMZ-FORMAT.md.
+    // is tapped by `inputLagSamples` / `polarity`, as without one. ALL OR NOTHING: the loader reads a lag from 0
+    // to kMaxLagSamples (the clean leg is never tapped early), a polarity of +1 or -1 and at most two finite
+    // corners of at least kMinCleanMatchHz, or none of it. The all-pass itself — prototype, sign,
+    // discretization — is pinned in NAMZ-FORMAT.md.
     struct CleanMatch
     {
-        int lagSamples = 0;               // at the file's own rate, counted from the model's INPUT as inputLagSamples is
+        int lagSamples = 0;               // at the file's own rate, counted from the model's INPUT as inputLagSamples is; >= 0
         int polarity = 1;                 // +1 the clean leg as it is, -1 inverted
         std::vector<double> allpassHz;    // the sections' corners, Hz: none, one or two
     };

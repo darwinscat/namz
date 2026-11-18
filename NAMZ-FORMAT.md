@@ -411,22 +411,26 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     own response at low tones (the reference fit plays sines across a bass's low end, 30 to 260 Hz, and
     states a match only where one beats the entry's own `input_lag_samples` / `polarity`).
     - `lag_samples` — how late the clean leg is tapped, at the file's own sample rate, counted from the
-      model's INPUT exactly as `input_lag_samples` is: a JSON integer token, at most 48000 either way.
-      Required.
+      model's INPUT exactly as `input_lag_samples` is: a JSON integer token from 0 to 48000. Never
+      negative: the clean leg is never tapped EARLY — a player cannot take the clean before it arrives,
+      and the fit never asks it to. Required.
     - `polarity` — the clean leg's sign: `1` as it is, `-1` inverted, as a JSON integer. Required.
     - `allpass_hz` — the corners, in Hz, of the first-order all-pass sections the clean leg runs through:
-      a list of zero, one or two finite numbers above 0. Optional; absent = `[]`, no sections.
+      a list of zero, one or two finite numbers of at least 1 Hz. Optional; absent = `[]`, no sections.
+      The floor is not taste: at 48 kHz a corner under about 2e-4 Hz gives a coefficient `c` (below) that
+      rounds, in float, to exactly −1 — a pole on the unit circle — and a corner under 1 Hz turns nothing
+      in the audible band anyway.
 
     A player that mixes taps its clean leg by THIS lag and polarity, through these sections, IN PLACE OF
-    `input_lag_samples` / `polarity` — the lag converted to its own rate as that one is, a negative one
-    delaying the model instead. The models' alignment against each other — `lag_samples`, and
-    `input_lag_samples` between files — never reads it: it is the clean leg's alone. Absent = not fitted:
-    the clean leg is tapped by `input_lag_samples` / `polarity`, as without it. ALL OR NOTHING: a required
-    part missing or any part unreadable — a lag of the wrong kind (`3.0`, `"3"`) or past the bound, a
-    polarity other than `1` / `-1`, an `allpass_hz` that is not a list, holds more than two, or holds
-    anything but a finite number above 0 — and the entry has no clean match. Never a refusal of the
-    manifest: the same rule as `input_lag_samples` and `polarity`. Since 5.2.0; additive, so `schema`
-    stays 5, and a reader that does not know the key plays the pack as before.
+    `input_lag_samples` / `polarity` — the lag converted to its own rate as that one is. The models'
+    alignment against each other — `lag_samples`, and `input_lag_samples` between files — never reads it:
+    it is the clean leg's alone. Absent = not fitted: the clean leg is tapped by `input_lag_samples` /
+    `polarity`, as without it. ALL OR NOTHING: a required part missing or any part unreadable — a lag of
+    the wrong kind (`3.0`, `"3"`), negative or past the bound, a polarity other than `1` / `-1`, an
+    `allpass_hz` that is not a list, holds more than two, or holds anything but a finite number of at
+    least 1 — and the entry has no clean match. Never a refusal of the manifest: the same rule as
+    `input_lag_samples` and `polarity`. Since 5.2.0; additive, so `schema` stays 5, and a reader that does
+    not know the key plays the pack as before.
 
     **Computing a section.** Each corner `fc` is one section with the analog prototype
     `H(s) = (1 − s/ωc) / (1 + s/ωc)`, `ωc = 2π·fc`: unity magnitude, 0° at DC, −90° at the corner, falling
@@ -441,9 +445,11 @@ of the writer, not a rule of the format: a reader parses JSON and must not depen
     ```
 
     Its response at a frequency `f` is `(1 − jΩ) / (1 + jΩ)`, `Ω = tan(π·f/fs) / tan(π·fc/fs)` — the
-    prototype's exactly at the corner, and the form the reference fit scores. The clean leg is the clean
-    input delayed by the lag, multiplied by the polarity and run through the sections in series, in any
-    order (they commute). A corner at or above 0.49·fs is played as no section — the reference player's
+    prototype's exactly at the corner. The reference fit scores this same closed form, but at the FILE's
+    own rate — it plays the tones through the model at the rate the model runs at — while a player builds
+    the section at the rate it plays at; the corner, in Hz, is what carries over. The clean leg is the
+    clean input delayed by the lag, multiplied by the polarity and run through the sections in series, in
+    any order (they commute). A corner at or above 0.49·fs is played as no section — the reference player's
     rule (felitronics-guitar-core's `rigplayer`) for a rate too low to hold it.
   - `epochs` / `esr` — how this model was trained: the number of epochs its weights have (a
     non-negative integer) and the ESR — error-to-signal ratio, lower is closer — the trainer reported

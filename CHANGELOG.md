@@ -11,7 +11,8 @@ carries its own version.
 ### Added
 - **`files[].clean_match` — how a player that mixes the clean input under a model lines the clean leg up**,
   `{ lag_samples, polarity, allpass_hz }`: the lag the clean leg is tapped at (counted from the model's input,
-  as `input_lag_samples` is), its sign, and the corners of up to two first-order all-passes it runs through.
+  as `input_lag_samples` is, 0 to 48000 — never early), its sign, and the corners (at least 1 Hz) of up to two
+  first-order all-passes it runs through.
   A bass crossover's clean match used to be fitted by every player instance whenever a pack loaded; now the
   capture side or a tool fits it once and writes it down, and a player taps its clean leg by it in place of
   `input_lag_samples` / `polarity`. NAMZ-FORMAT.md pins the all-pass (prototype, sign, discretization) so
